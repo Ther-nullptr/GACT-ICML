@@ -52,6 +52,7 @@ def compute_tensor_bytes(tensors):
         tensors = [tensors]
 
     ret = 0
+    
     for x in tensors:
         if type(x)== int:
             ret += 4
@@ -68,6 +69,36 @@ def compute_tensor_bytes(tensors):
             exit(0)
 
     return ret
+
+def get_weight_memory(model):
+    total_size = 0
+    for name, param in model.named_parameters():
+        total_size += compute_tensor_bytes(param)
+    return total_size
+
+def get_gradient_memory(model):
+    total_size = 0
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            total_size += compute_tensor_bytes(param.grad)
+    return total_size
+
+def get_optimizer_memory(optimizer):
+    #! divide "weight" and "master weight". we can find this by record the data type
+    #! without amp, the weight in optimizer is the same tensor in model param
+    #! so ignore the weight in optimizer, just care the momentum buffer
+    total_size = 0
+    for group in optimizer.param_groups:
+        for param in group['params']:
+            state = optimizer.state[param]
+            # only suit for Adam
+            if 'exp_avg' in state and state['exp_avg'] is not None:
+                momentum_value = state['exp_avg']
+                total_size += compute_tensor_bytes(momentum_value)
+            if 'exp_avg_sq' in state and state['exp_avg_sq'] is not None:
+                momentum_sq_value = state['exp_avg_sq']
+                total_size += compute_tensor_bytes(momentum_sq_value)
+    return total_size
 
 def empty_cache(ratio):
     if ratio is None:

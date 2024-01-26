@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 import time
 import gact
-from gact.utils import get_memory_usage, exp_recorder
+from gact.utils import get_memory_usage, get_weight_memory, get_gradient_memory, get_optimizer_memory, exp_recorder
 from utils import AverageMeter
 
 import transformers
@@ -175,7 +175,7 @@ def parse_args():
     parser.add_argument("--get-speed", action="store_true", help="Whether or not to get ips")
     parser.add_argument("--gact", action="store_true", help="Whether or not to use gact")
     parser.add_argument("--opt_level", type=str, help="Optimization level of gact")
-    parser.add_argument("--get_macs", action="store_true", help="Get Number of Macs")
+    parser.add_argument("--get-macs", action="store_true", help="Get Number of Macs")
     parser.add_argument('--customize', action='store_true')
     parser.add_argument("--layer_num", type=int, default=24, help="Number of Bert layers")
     parser.add_argument("--hidden_size", type=int, default=1024, help="hidden size")
@@ -309,17 +309,16 @@ def main():
         )
     if args.ckpt:
         model.gradient_checkpointing_enable()
-        
+    
+    print(model)
     model.to(args.device)
     if args.gact:
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
 
     # update optimization level, this is only for logging output
-    if args.ckpt and args.actnn:
+    if args.ckpt:
         args.opt_level += '_ckpt'
-    elif args.ckpt:
-        args.opt_level = 'ckpt'
             
     # Preprocessing the datasets
     if args.task_name is not None:
@@ -485,6 +484,7 @@ def main():
     total_mem = AverageMeter('Total Memory', ':.4e')
     peak_mem = AverageMeter('Peak Memory', ':.4e')
     activation_mem = AverageMeter('Activation Memory', ':.4e')
+    init_mem = AverageMeter('Init Memory', ':.4e')
 
     def pack_hook(tensor): # quantize hook
         if args.gact:
@@ -535,7 +535,7 @@ def main():
                     )
                     macs, params = profile(model, inputs=inputs_for_flops,)
 
-                    print(f"Macs: {macs}\t Params: {params}")
+                    print(f"Macs: {macs / 10**12} TFLOPs \t Params: {params / 10 ** 9} G")
                     out_file = "get_macs.json"
                     with open(out_file, 'w') as fout:
                         fout.write(json.dumps([macs, params]))
@@ -566,13 +566,19 @@ def main():
                     total_mem.update(before_backward)
                     activation_mem.update(before_backward - after_backward)
                     peak_mem.update(
-                        torch.cuda.max_memory_allocated())
+                        torch.cuda.max_memory_allocated()
+                    )
                     del loss
                     del outputs
                     
                     accelerator.print("peak %d MB" % (peak_mem.get_value() / 1024 / 1024))
                     accelerator.print("total %d MB" % (total_mem.get_value() / 1024 / 1024))
                     accelerator.print("activation %d MB" % (activation_mem.get_value() / 1024 / 1024))
+                    
+                    accelerator.print("weight %d MB" % (get_weight_memory(model) / 1024 / 1024))
+                    accelerator.print("gradient %d MB" % (get_gradient_memory(model) / 1024 / 1024))
+                    accelerator.print("optimizer %d MB" % (get_optimizer_memory(optimizer) / 1024 / 1024))
+                    accelerator.print('-------------------------------------------------')
                     exit(0)
                     
                 if args.get_speed and iter > 1:
@@ -600,7 +606,7 @@ def main():
 
                 # if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 torch.nn.utils.clip_grad.clip_grad_norm_(model.parameters(), args.max_gradient_norm)
-                optimizer.step()
+                optimizer.step() #! optimizer generate there
                 lr_scheduler.step()
                 # optimizer.zero_grad()
                 progress_bar.update(1)
@@ -617,7 +623,7 @@ def main():
                         outputs = model(**small_batch)
                         loss = outputs.loss
                         optimizer.zero_grad()
-                        loss.backward()
+                        loss.backward() #! gradient generate there
                         del loss
                         del outputs
                         del small_batch
