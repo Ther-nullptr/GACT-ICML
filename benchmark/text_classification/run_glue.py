@@ -72,6 +72,7 @@ metric_key = {
     'sst2': 'accuracy',
     'mnli': 'accuracy',
     'qnli': 'accuracy',
+    'rte': 'accuracy',
     'qqp': 'f1'
 }
 
@@ -255,7 +256,7 @@ def main():
     # download the dataset.
     if args.task_name is not None:
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset("glue", args.task_name)
+        raw_datasets = load_dataset("/home/yujin-wa20/projects/GACT-ICML/benchmark/text_classification/glue.py", args.task_name)
     else:
         # Loading the dataset from local csv or json file.
         data_files = {}

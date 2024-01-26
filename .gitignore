@@ -27,3 +27,8 @@ gact/build
 gact/dist
 gact/gact.egg-info
 gact/gact/cpp_extension/*.so
+
+
+output/
+log/
+speed_results.json

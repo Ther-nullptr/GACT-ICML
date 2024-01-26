@@ -37,7 +37,8 @@ class Controller:
         self.iter = 0
 
     def __del__(self):
-        self.uninstall_hook()
+        pass
+        # self.uninstall_hook()
 
     def install_hook(self):
         def pack_hook(x):
