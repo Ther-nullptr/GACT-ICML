@@ -28,7 +28,6 @@ from tqdm.auto import tqdm
 import time
 import gact
 from gact.utils import get_memory_usage, get_weight_memory, get_gradient_memory, get_optimizer_memory, exp_recorder
-from gact.flops_ops import ModuleFLOPs_Linear, ModuleFLOPs_Norm, ModuleFLOPs_GELU, ModuleFLOPs_QK, ModuleFLOPs_OV, MethodFLOPs_softmax_from_Q
 from utils import AverageMeter
 
 import transformers
@@ -79,7 +78,6 @@ metric_key = {
 
 flops_intensity_dict = {
     'gemm': 2,
-    'norm': 5,
     'softmax': 10,
     'actfn': 10
 }
@@ -211,11 +209,6 @@ def parse_args():
     return args
 
 
-total_flops = 0
-total_flops_intensity = 0
-total_forward_flops = 0
-total_backward_flops = 0
-
 def main():
     args = parse_args()
 
@@ -303,6 +296,7 @@ def main():
             num_labels = len(label_list)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer)
+    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     # Load pretrained model and tokenizer
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
@@ -536,91 +530,38 @@ def main():
                     batch[k] = v.to(args.device)
                 
                 if args.get_macs:
+                    from thop import profile
+                    inputs_for_flops = (
+                        batch.get("input_ids", None),
+                        batch.get("attention_mask", None),
+                        batch.get("token_type_ids", None),
+                        batch.get("position_ids", None),
+                        batch.get("head_mask", None),
+                        batch.get("input_embeds", None),
+                        batch.get("labels", None),
+                    )
+
+                    total_flops = 0
+                    total_flops_intensity = 0
+                    total_forward_flops = 0
+                    total_backward_flops = 0
 
                     def flops_forward_hook(module, inputs, outputs):
-                        global total_flops, total_flops_intensity, total_forward_flops, total_backward_flops
-                        class_type = module.__class__.__name__
-                        # # only for debug
-                        # print(f"forward: {module.name}, {module.__class__.__name__}")
-
-                        if class_type == 'Linear': # y = x @ W + b, (B,M,K) @ (K,N) + (N,) = (B,M,N)
-                            flops = ModuleFLOPs_Linear(module, outputs, inputs[0])
-                            total_flops += flops
-                            total_forward_flops += flops
-                            module.flops = flops # save the flops for backward
-
-                        elif class_type == 'LayerNorm':
-                            flops = ModuleFLOPs_Norm(module, outputs, inputs[0])
-                            total_flops += flops
-                            total_forward_flops += flops
-                            module.flops = flops
-
-                        elif class_type == 'GELUActivation' or class_type == 'SiLUActivation': # GELU, usually used in BERT type models
-                            flops = ModuleFLOPs_GELU(module, outputs, inputs[0])
-                            total_flops += flops
-                            total_forward_flops += flops
-                            module.flops = flops
-
-                        if 'query' in module.name: # specially for (Q @ K.T) @ V
-                            # Q @ K
-                            flops = ModuleFLOPs_QK(outputs)
-                            # softmax
-                            flops += MethodFLOPs_softmax_from_Q(outputs)
-                            # O @ V
-                            flops += ModuleFLOPs_OV(outputs)
-                            total_flops += flops
-                            module.attn_out_shape = outputs.shape
-                    
+                        print(f"forward: {module.name}, {module.__class__.__name__}")
                     
                     def flops_backward_hook(module, grad_input, grad_output):
-                        global total_flops, total_flops_intensity, total_forward_flops, total_backward_flops
-                        class_type = module.__class__.__name__
-                        # # only for debug
-                        # print(f"backward: {module.name}, {module.__class__.__name__}")
-
-                        if class_type == 'Linear':
-                            # compute gradient of activation
-                            flops = module.flops
-                            total_flops += flops
-                            total_backward_flops += flops
-
-                            # compute gradient of weight
-                            if module.weight.requires_grad:
-                                total_flops += flops
-                                total_backward_flops += flops
-
-                        elif class_type == 'LayerNorm': # TODO: norm and activation function just copy their forward, but this is not accurate!
-                            flops = module.flops
-                            total_flops += flops
-                            total_backward_flops += flops
-
-                        elif class_type == 'GELUActivation' or class_type == 'SiLUActivation':
-                            flops = module.flops
-                            total_flops += flops
-                            total_backward_flops += flops
-
-                        if 'query' in module.name:
-                            # before: 2 (b, s, h) @ (b, h, s)
-                            # after: 4 (b, s, h) @ (b, h, s) + 2 (b, s, s) @ (b, s, s)
-                            attn_out_shape = module.attn_out_shape # (b, s, h)
-                            b, s, h = attn_out_shape
-                            flops = 2 * (4 * b * s * h * s + 2 * b * s * s * s)
-                            total_flops += flops
-                            total_backward_flops += flops
+                        print(f"backward: {module.name}, {module.__class__.__name__}")
                     
                     # register forward hook
                     for name, module in model.named_modules():
                         module.name = name
                         module.register_forward_hook(flops_forward_hook)
                         module.register_backward_hook(flops_backward_hook)
+                        
 
                     out = model(**batch)
                     loss = out.logits.sum()
                     loss.backward()
-
-                    print(f"Total FLOPs: {total_flops / 10**12} TFLOPs")
-                    print(f"Total Forward FLOPs: {total_forward_flops / 10**12} TFLOPs")
-                    print(f"Total Backward FLOPs: {total_backward_flops / 10**12} TFLOPs")
 
                     # macs, params = profile(model, inputs=inputs_for_flops,)
 
