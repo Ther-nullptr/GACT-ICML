@@ -82,7 +82,8 @@ def ModuleFLOPs_Linear(module: nn.Linear, result: Tensor, *args, **kwargs) -> in
     assert matmul_shape == result_shape
 
     total_flops = flops_matmul(input_shape, weight_shape, result_shape)
-    if module.bias is not None:
+    
+    if hasattr(module, 'bias') and module.bias is not None:
         total_flops += flops_elemwise(result_shape)
 
     return total_flops

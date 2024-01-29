@@ -39,6 +39,7 @@ from transformers import (
     AutoConfig,
     AutoModelForSequenceClassification,
     AutoTokenizer,
+    BitsAndBytesConfig,
     DataCollatorWithPadding,
     PretrainedConfig,
     SchedulerType,
@@ -48,9 +49,14 @@ from transformers import (
 )
 from transformers.file_utils import get_full_repo_name
 from transformers.utils.versions import require_version
+
+import peft
+from peft import get_peft_model, LoraConfig, PeftType, PeftModelForSequenceClassification
+
+import bitsandbytes as bnb
+
 from gact.controller import Controller
-import json
-from transformers.models.bert.modeling_bert import BertForSequenceClassification
+
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +89,11 @@ flops_intensity_dict = {
     'softmax': 10,
     'actfn': 10
 }
+
+total_flops = 0
+total_flops_intensity = 0
+total_forward_flops = 0
+total_backward_flops = 0
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a text classification task")
@@ -189,6 +200,12 @@ def parse_args():
     parser.add_argument("--hidden_size", type=int, default=1024, help="hidden size")
     parser.add_argument("--intermediate_size", type=int, default=4096, help='customize intermediate size')
     parser.add_argument("--ckpt", action='store_true', help='enable gradient checkpoint')
+    # config about lora
+    parser.add_argument("--lora", action='store_true', help='enable lora')
+    parser.add_argument("--lora-all-linears", action='store_true', help='lora all linears')
+    parser.add_argument("--use-fp4", action='store_true', help='use fp4')
+    parser.add_argument("--r", action='store_true', help='lora rank', default=8)
+
     args = parser.parse_args()
 
     # Sanity checks
@@ -211,10 +228,19 @@ def parse_args():
     return args
 
 
-total_flops = 0
-total_flops_intensity = 0
-total_forward_flops = 0
-total_backward_flops = 0
+def find_all_linear_names(args, model):
+    # cls = bnb.nn.Linear4bit if args.use_fp4 == 4 else torch.nn.Linear
+    # lora_module_names = set()
+    # for name, module in model.named_modules():
+    #     if isinstance(module, cls):
+    #         names = name.split('.')
+    #         lora_module_names.add(names[0] if len(names) == 1 else names[-1])
+
+    # if 'out_proj' in lora_module_names: # needed for 16-bit
+    #     lora_module_names.remove('out_proj')
+    # print(lora_module_names)
+    return ['dense', 'key', 'value', 'query']
+
 
 def main():
     args = parse_args()
@@ -307,24 +333,51 @@ def main():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    if args.customize:
-        config = AutoConfig.from_pretrained(args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
-        config.num_hidden_layers = args.layer_num
-        config.hidden_size = args.hidden_size
-        # import pdb; pdb.set_trace()
-        model = BertForSequenceClassification(config)        # I assume that we only use BERT.
+
+    config = AutoConfig.from_pretrained(args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
+
+    if args.use_fp4:
+        assert args.lora, "use fp4 must use lora"
+        model = AutoModelForSequenceClassification.from_pretrained(
+            args.model_name_or_path, 
+            config=config,
+            quantization_config=BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16, 
+                bnb_4bit_use_double_quant=True, 
+                bnb_4bit_quant_type="nf4",
+                llm_int8_skip_modules=["classifier"]
+            ),
+            load_in_4bit=True, 
+            ignore_mismatched_sizes=True, 
+            device_map="auto",
+        )
+        use_gradient_checkpointing = args.ckpt
+        model = peft.prepare_model_for_kbit_training(model, use_gradient_checkpointing=use_gradient_checkpointing)
     else:
-        config = AutoConfig.from_pretrained(args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
         model = AutoModelForSequenceClassification.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
             config=config,
         )
-    if args.ckpt:
-        model.gradient_checkpointing_enable()
+
+        if args.ckpt:
+            model.gradient_checkpointing_enable()
+
+    print(model)
+
+    if args.lora:
+        peft_config = LoraConfig(
+            task_type="SEQ_CLS", 
+            inference_mode=False, 
+            r=args.r, 
+            lora_alpha=16, 
+            lora_dropout=0.1,
+            target_modules=find_all_linear_names(args, model),
+        )   
+        model = PeftModelForSequenceClassification(model, peft_config)
     
     print(model)
-    model.to(args.device)
     if args.gact:
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
@@ -513,6 +566,10 @@ def main():
     iter = 0
     best_metric = 0
     batch_total_time = 0
+    model.to(args.device)
+
+    print('model.base_model.model.classifier.original_module', model.base_model.model.classifier.original_module.class_intermediate.weight.requires_grad)
+    print('model.base_model.model.classifier.modules_to_save', model.base_model.model.classifier.modules_to_save.default.class_intermediate.weight.requires_grad)
     with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
         for epoch in range(args.num_train_epochs):
             model.train()
@@ -544,10 +601,11 @@ def main():
                         # print(f"forward: {module.name}, {module.__class__.__name__}")
 
                         if class_type == 'Linear': # y = x @ W + b, (B,M,K) @ (K,N) + (N,) = (B,M,N)
-                            flops = ModuleFLOPs_Linear(module, outputs, inputs[0])
-                            total_flops += flops
-                            total_forward_flops += flops
-                            module.flops = flops # save the flops for backward
+                            if (not args.lora) or (args.lora and "base_layer" not in module.name):
+                                flops = ModuleFLOPs_Linear(module, outputs, inputs[0])
+                                total_flops += flops
+                                total_forward_flops += flops
+                                module.flops = flops # save the flops for backward
 
                         elif class_type == 'LayerNorm':
                             flops = ModuleFLOPs_Norm(module, outputs, inputs[0])
@@ -569,6 +627,7 @@ def main():
                             # O @ V
                             flops += ModuleFLOPs_OV(outputs)
                             total_flops += flops
+                            total_forward_flops += flops
                             module.attn_out_shape = outputs.shape
                     
                     
@@ -580,14 +639,15 @@ def main():
 
                         if class_type == 'Linear':
                             # compute gradient of activation
-                            flops = module.flops
-                            total_flops += flops
-                            total_backward_flops += flops
-
-                            # compute gradient of weight
-                            if module.weight.requires_grad:
+                            if (not args.lora) or (args.lora and "base_layer" not in module.name): 
+                                flops = module.flops
                                 total_flops += flops
                                 total_backward_flops += flops
+
+                                # compute gradient of weight
+                                if module.weight.requires_grad:
+                                    total_flops += flops
+                                    total_backward_flops += flops
 
                         elif class_type == 'LayerNorm': # TODO: norm and activation function just copy their forward, but this is not accurate!
                             flops = module.flops
