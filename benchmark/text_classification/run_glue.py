@@ -54,6 +54,7 @@ import peft
 from peft import get_peft_model, LoraConfig, PeftType, PeftModelForSequenceClassification
 
 import bitsandbytes as bnb
+import lpmm
 
 from gact.controller import Controller
 
@@ -205,6 +206,9 @@ def parse_args():
     parser.add_argument("--lora-all-linears", action='store_true', help='lora all linears')
     parser.add_argument("--use-fp4", action='store_true', help='use fp4')
     parser.add_argument("--r", action='store_true', help='lora rank', default=8)
+    # config about optimizer
+    parser.add_argument("--optimizer-8bit", action='store_true', help='use 8bit optimizer')
+    parser.add_argument("--optimizer-4bit", action='store_true', help='use 4bit optimizer')
 
     args = parser.parse_args()
 
@@ -504,7 +508,14 @@ def main():
             "weight_decay": 0.0,
         },
     ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
+
+    assert not (args.optimizer_8bit and args.optimizer_4bit), "8bit and 4bit cannot be used at the same time"
+    if args.optimizer_8bit:
+        optimizer = bnb.optim.AdamW8bit(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
+    elif args.optimizer_4bit:
+        optimizer = lpmm.optim.AdamW4bit(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
+    else:
+        optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
 
     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
@@ -568,8 +579,6 @@ def main():
     batch_total_time = 0
     model.to(args.device)
 
-    print('model.base_model.model.classifier.original_module', model.base_model.model.classifier.original_module.class_intermediate.weight.requires_grad)
-    print('model.base_model.model.classifier.modules_to_save', model.base_model.model.classifier.modules_to_save.default.class_intermediate.weight.requires_grad)
     with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
         for epoch in range(args.num_train_epochs):
             model.train()
