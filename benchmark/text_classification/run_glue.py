@@ -54,10 +54,9 @@ import peft
 from peft import get_peft_model, LoraConfig, PeftType, PeftModelForSequenceClassification
 
 import bitsandbytes as bnb
-import lpmm
+from lpmm import optim
 
 from gact.controller import Controller
-
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +80,10 @@ metric_key = {
     'mnli': 'accuracy',
     'qnli': 'accuracy',
     'rte': 'accuracy',
-    'qqp': 'f1'
+    'qqp': 'f1',
+    'stsb': 'pearsonr',
+    'cola': 'matthews_correlation',
+    'wnli': 'accuracy',
 }
 
 flops_intensity_dict = {
@@ -513,7 +515,7 @@ def main():
     if args.optimizer_8bit:
         optimizer = bnb.optim.AdamW8bit(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
     elif args.optimizer_4bit:
-        optimizer = lpmm.optim.AdamW4bit(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
+        optimizer = optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
     else:
         optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
 
@@ -556,7 +558,7 @@ def main():
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
+    # progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
     total_mem = AverageMeter('Total Memory', ':.4e')
     peak_mem = AverageMeter('Peak Memory', ':.4e')
@@ -767,7 +769,7 @@ def main():
                 optimizer.step() #! optimizer generate there
                 lr_scheduler.step()
                 # optimizer.zero_grad()
-                progress_bar.update(1)
+                # progress_bar.update(1)
                 completed_steps += 1
 
                 if completed_steps >= args.max_train_steps:
