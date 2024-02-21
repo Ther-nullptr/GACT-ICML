@@ -25,11 +25,13 @@ import datasets
 from datasets import load_dataset, load_metric
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from typing import List, Tuple
 import time
 import gact
 from gact.utils import get_memory_usage, get_weight_memory, get_gradient_memory, get_optimizer_memory, exp_recorder
 from gact.flops_ops import ModuleFLOPs_Linear, ModuleFLOPs_Norm, ModuleFLOPs_GELU, ModuleFLOPs_QK, ModuleFLOPs_OV, MethodFLOPs_softmax_from_Q
 from utils import AverageMeter
+import wandb
 
 import transformers
 from accelerate import Accelerator
@@ -211,6 +213,12 @@ def parse_args():
     # config about optimizer
     parser.add_argument("--optimizer-8bit", action='store_true', help='use 8bit optimizer')
     parser.add_argument("--optimizer-4bit", action='store_true', help='use 4bit optimizer')
+    # config about sparse bp
+    parser.add_argument("--sparse-bp", action='store_true', help='enable sparse bp')
+    parser.add_argument("--sparse-bp-freeze-range", type=str, default="[i for i in range(12)]", help='sparse bp range')
+    parser.add_argument("--sparse-bp-freeze-layer", type=str, default="[]", help='sparse bp layer')
+    # config about linear probe
+    parser.add_argument("--linear-probe", action='store_true', help='enable linear probe')
 
     args = parser.parse_args()
 
@@ -382,8 +390,34 @@ def main():
             target_modules=find_all_linear_names(args, model),
         )   
         model = PeftModelForSequenceClassification(model, peft_config)
+
+    if args.sparse_bp:
+        # freeze the layers
+        print(f"Freeze range: {args.sparse_bp_freeze_range}")
+        for name, param in model.named_parameters():
+            print(name)
+            if len(name.split('.')) > 3 and name.split('.')[3].isdigit() and int(name.split('.')[3]) in eval(args.sparse_bp_freeze_range): # freeze certain layers
+                param.requires_grad = False
+            if 'embeddings' in name:
+                param.requires_grad = False
+            for item in eval(args.sparse_bp_freeze_layer): # freeze certain parts
+                if item in name:
+                    param.requires_grad = False
+
+    if args.linear_probe:
+        # only train the classifier
+        for name, param in model.named_parameters():
+            if 'classifier' not in name:
+                param.requires_grad = False
     
     print(model)
+
+    # print trainable parameter ratio:
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    trainable_ratio = trainable_params / total_params
+    print(f"Total params: {total_params}, Trainable params: {trainable_params}, Trainable ratio: {trainable_ratio}")
+
     if args.gact:
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
@@ -577,15 +611,28 @@ def main():
 
 
     iter = 0
+    train_step = 0
+    val_step = 0
     best_metric = 0
     batch_total_time = 0
     model.to(args.device)
+
+    # define wandb logger
+    wandb_project = f"{args.model_name_or_path.split('/')[-1]}_{args.task_name}"
+    wandb_name = f"lr_{args.learning_rate}_{args.opt_level}_lora_{args.lora}_low-bit-optimizer_{args.optimizer_4bit}_sparse-bp_{args.sparse_bp}_sparse-bp-range_{args.sparse_bp_freeze_range}_sparse-bp-layers_{args.sparse_bp_freeze_layer}_linear-probe_{args.linear_probe}"
+    wandb.init(project=wandb_project, name=wandb_name)
+    wandb.define_metric("train_step")
+    wandb.define_metric("val_step")
+    wandb.define_metric("train_*", step_metric="train_step")
+    wandb.define_metric("val_*", step_metric="val_step")
+    wandb.log({"trainable_ratio": trainable_ratio})
 
     with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
         for epoch in range(args.num_train_epochs):
             model.train()
             for step, batch in enumerate(train_dataloader):
                 iter += 1
+                train_step += 1
         
                 if args.get_mem and iter > 1:
                     torch.cuda.synchronize()
@@ -705,6 +752,10 @@ def main():
                 outputs = model(**batch)
                 loss = outputs.loss
                 loss = loss / args.gradient_accumulation_steps
+
+                # log the train loss
+                wandb.log({"train_loss": loss.item(), "train_step": train_step})
+
                 if args.get_mem and iter > 1:
                     # accelerator.print("===============Before Backward=======================")
                     torch.cuda.synchronize()
@@ -803,9 +854,13 @@ def main():
 
             eval_metric = metric.compute()
             logger.info(f"epoch {epoch}: {eval_metric}")
+
+            for key, value in eval_metric.items():
+                wandb.log({f"val_{key}": value, "val_step": epoch})
             
             if eval_metric[metric_key[args.task_name]] > best_metric:
                 best_metric = eval_metric[metric_key[args.task_name]]
+                wandb.log({"best_val_acc": best_metric, "val_step": epoch})
 
             if args.push_to_hub and epoch < args.num_train_epochs - 1:
                 accelerator.wait_for_everyone()

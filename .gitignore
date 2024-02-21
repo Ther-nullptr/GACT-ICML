@@ -32,5 +32,6 @@ gact/gact/cpp_extension/*.so
 output/
 log/
 model/
+wandb/
 speed_results.json
 get_macs.json

@@ -3,6 +3,7 @@ from gact.conf import config
 from gact.quantizer import Quantizer
 from gact.autoprec import AutoPrecision
 
+import torchvision
 
 class Controller:
     def __init__(self, model):
@@ -35,6 +36,8 @@ class Controller:
 
         self.bit = config.bit
         self.iter = 0
+        
+        self.jpeg = config.jpeg
 
     def __del__(self):
         pass
@@ -88,11 +91,29 @@ class Controller:
                 return tensor_cpu
             else:
                 return input
-        return self.quantizer.quantize(input)
+        if self.jpeg:
+            # quantize then compress
+            quantized_data = self.quantizer.quantize(input)
+            print(quantized_data[1].shape, quantized_data[1].dtype)
+            # convert to numpy
+            quantized_data = quantized_data.cpu().numpy()
+            # compress jpeg
+            quantized_data = torchvision.io.encode_jpeg(quantized_data)
+            return quantized_data
+        else:
+            return self.quantizer.quantize(input)
 
     def dequantize(self, input):
         if not config.compress_activation:
             if config.swap:
                 input = input.cuda(non_blocking=True)
             return input
-        return self.quantizer.dequantize(input)
+        if self.jpeg:
+            # decompress then dequantize
+            # decompress jpeg
+            decode_data = torchvision.io.decode_jpeg(input, device='cuda')
+            # dequantize
+            dequantized_data = self.quantizer.dequantize(decode_data)
+            return dequantized_data
+        else:
+            return self.quantizer.dequantize(input)
