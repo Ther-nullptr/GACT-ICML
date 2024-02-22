@@ -256,6 +256,10 @@ def find_all_linear_names(args, model):
     return ['dense', 'key', 'value', 'query']
 
 
+def forward_hook(module, input, output):
+    print(module.name)
+    print(output.shape)
+
 def main():
     args = parse_args()
 
@@ -377,8 +381,6 @@ def main():
 
         if args.ckpt:
             model.gradient_checkpointing_enable()
-
-    print(model)
 
     if args.lora:
         peft_config = LoraConfig(
@@ -616,6 +618,12 @@ def main():
     best_metric = 0
     batch_total_time = 0
     model.to(args.device)
+
+    # register the forward hook
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            module.name = name
+            module.register_forward_hook(forward_hook)
 
     # define wandb logger
     wandb_project = f"{args.model_name_or_path.split('/')[-1]}_{args.task_name}"

@@ -146,11 +146,11 @@ class Quantizer:
                         raise ValueError('The default bit should be 4 or 8')
 
                 q_inputs[0] = q_inputs[0][:-1].view(input_shape_tmp).unsqueeze(0).to(torch.uint8).cpu() # the last byte is 0, cut it off
-                q_inputs[0] = torchvision.io.encode_jpeg(q_inputs[0], quality=100) # the type convert to 'byte'
+                q_inputs[0] = torchvision.io.encode_jpeg(q_inputs[0], quality=30) # the type convert to 'byte'
                 # compute the compress ratio
-                # original_size = torch.prod(torch.tensor(input_shape_tmp)).item()
-                # compress_size = q_inputs[0].numel()
-                # print('compression ratio: ', original_size / compress_size)
+                original_size = torch.prod(torch.tensor(input_shape_tmp)).item()
+                compress_size = q_inputs[0].numel()
+                print('compression ratio: ', original_size / compress_size)
 
             if self.swap:
                 #  with torch.cuda.stream(self.swap_out_stream):
@@ -172,6 +172,7 @@ class Quantizer:
         return True, is_dropout_mask, key, input_shape, tid
 
     def dequantize(self, input):
+        exit(0)
         quantized = input[0]
         if not quantized:
             return input[1]
