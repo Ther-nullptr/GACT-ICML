@@ -88,7 +88,7 @@ std::pair<Tensor, Tensor> pack_single_precision_cuda(Tensor data,
   int64_t N_round = N + (work_per_thread - N % work_per_thread) % work_per_thread;
   int64_t total_bits = (int64_t)bits * (N_round * num_groups * group_size);
   auto options = torch::TensorOptions().dtype(torch::kInt8).device(data.device());
-  Tensor packed = torch::empty({(total_bits + 8) / 8,}, options);
+  Tensor packed = torch::empty({(total_bits + 8) / 8,}, options); // that is why we should -1 in quantized data
 
   // Compute scale
   options = torch::TensorOptions().dtype(data.dtype()).device(data.device());

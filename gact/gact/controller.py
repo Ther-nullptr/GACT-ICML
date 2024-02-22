@@ -3,8 +3,6 @@ from gact.conf import config
 from gact.quantizer import Quantizer
 from gact.autoprec import AutoPrecision
 
-import torchvision
-
 class Controller:
     def __init__(self, model):
         if not config.compress_activation:
@@ -24,7 +22,7 @@ class Controller:
             default_bit = 8
 
         self.quantizer = Quantizer(
-            default_bit=default_bit, swap=config.swap, prefetch=config.prefetch)
+            default_bit=default_bit, swap=config.swap, prefetch=config.prefetch, jpeg=config.jpeg, fake_quant=config.fake_quant)
         # does not quantize model parameters
         self.quantizer.filter_tensors(model.named_parameters())
 
@@ -91,29 +89,11 @@ class Controller:
                 return tensor_cpu
             else:
                 return input
-        if self.jpeg:
-            # quantize then compress
-            quantized_data = self.quantizer.quantize(input)
-            print(quantized_data[1].shape, quantized_data[1].dtype)
-            # convert to numpy
-            quantized_data = quantized_data.cpu().numpy()
-            # compress jpeg
-            quantized_data = torchvision.io.encode_jpeg(quantized_data)
-            return quantized_data
-        else:
-            return self.quantizer.quantize(input)
+        return self.quantizer.quantize(input)
 
     def dequantize(self, input):
         if not config.compress_activation:
             if config.swap:
                 input = input.cuda(non_blocking=True)
             return input
-        if self.jpeg:
-            # decompress then dequantize
-            # decompress jpeg
-            decode_data = torchvision.io.decode_jpeg(input, device='cuda')
-            # dequantize
-            dequantized_data = self.quantizer.dequantize(decode_data)
-            return dequantized_data
-        else:
-            return self.quantizer.dequantize(input)
+        return self.quantizer.dequantize(input)

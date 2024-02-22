@@ -1,7 +1,9 @@
 import torch
+import torchvision
 from gact.conf import config
 from gact.ops import op_quantize, op_dequantize, op_quantize_mask, op_dequantize_mask
 from gact.utils import uniform_sample, compute_tensor_bytes
+import wandb
 
 
 class Quantizer:
@@ -11,10 +13,11 @@ class Quantizer:
     prefetch: if turned on, activation of the previous layer will be prefetched. the parameter is meaningful only when swap is True
     """
 
-    def __init__(self, default_bit, swap, prefetch):
+    def __init__(self, default_bit, swap, prefetch, jpeg, fake_quant):
         self.unrelated_tensors = set()  # record the tensors that should not be quantized
         self.default_bit = default_bit
-
+        self.jpeg = jpeg  # for jpeg compression
+        self.fake_quant = fake_quant
         self.swap = swap
         if swap:
             self.swap_out_stream = torch.cuda.Stream()
@@ -119,9 +122,36 @@ class Quantizer:
                 self.seeds[tid] = tid
             else:
                 bit = self.bits[tid]
+            
             # quantize
             q_inputs = op_quantize(
-                input, bit, self.seeds[tid] + self.seed_iter)
+                input, bit, self.seeds[tid] + self.seed_iter) #! where the true value is stored, [0]: int data, [1]: quantize bit, [2][3]: like scaling factors. Notice that [0]: int data is stored in a list type. Also, 2/4 bit quantization is packed to int8.
+            
+            # jpeg compression
+            if self.jpeg and input_shape[-1] != 2: # except the final logic
+                if len(input_shape) > 2:
+                # convert the input tensor to 2D tensor
+                    if self.default_bit == 8:
+                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item(), input_shape[-1]))
+                    elif self.default_bit == 4:
+                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item() // 2, input_shape[-1]))
+                    else:
+                        raise ValueError('The default bit should be 4 or 8')
+                else:
+                    if self.default_bit == 8:
+                        input_shape_tmp = input_shape
+                    elif self.default_bit == 4:
+                        input_shape_tmp = torch.Size((input_shape[0] // 2, input_shape[1]))
+                    else:
+                        raise ValueError('The default bit should be 4 or 8')
+
+                q_inputs[0] = q_inputs[0][:-1].view(input_shape_tmp).unsqueeze(0).to(torch.uint8).cpu() # the last byte is 0, cut it off
+                q_inputs[0] = torchvision.io.encode_jpeg(q_inputs[0]) # the type convert to 'byte'
+                # compute the compress ratio
+                # original_size = torch.prod(torch.tensor(input_shape_tmp)).item()
+                # compress_size = q_inputs[0].numel()
+                # print('compression ratio: ', original_size / compress_size)
+
             if self.swap:
                 #  with torch.cuda.stream(self.swap_out_stream):
                 # self.swap_out_stream.wait_stream(self.compute_stream)
@@ -162,6 +192,12 @@ class Quantizer:
         # compute waits until prefetch finishes
         if self.prefetch and self.swap:
             self.end_prefetch_event.wait(self.compute_stream)
+
+        # decode jpeg
+        if self.jpeg and q_inputs[0].dtype == torch.uint8:
+            # print('decompress')
+            q_inputs[0] = torchvision.io.decode_jpeg(q_inputs[0], device='cuda')
+            q_inputs[0] = q_inputs[0].flatten().to(torch.int8)
 
         if not q_inputs[0].is_cuda:
             q_inputs[0] = q_inputs[0].cuda(non_blocking=False)

@@ -16,7 +16,7 @@ def set_optimization_level(level):
         config.jpeg = True
     elif level == 'L1.4':    # fixed 4-bit + jpeg
         config.auto_prec = False
-        config.bit = 4
+        config.bit = 4   
         config.jpeg = True
     elif level == 'L2':  # auto precision 4-bit
         config.auto_prec = True
@@ -27,6 +27,9 @@ def set_optimization_level(level):
     elif level == 'L2.2':  # auto precision 2-bit
         config.auto_prec = True
         config.bit = 2
+    elif level == 'L2.3':  # auto precision 8-bit
+        config.auto_prec = True
+        config.bit = 8
     elif level == 'L3':  # auto precision 4-bit + swap
         config.auto_prec = True
         config.bit = 4
@@ -78,6 +81,7 @@ class QuantizationConfig:
         
         # JPEG compression
         self.jpeg = False
+        self.fake_quant = False
 
 
 config = QuantizationConfig()
