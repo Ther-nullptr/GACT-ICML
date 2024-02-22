@@ -128,25 +128,25 @@ class Quantizer:
                 input, bit, self.seeds[tid] + self.seed_iter) #! where the true value is stored, [0]: int data, [1]: quantize bit, [2][3]: like scaling factors. Notice that [0]: int data is stored in a list type. Also, 2/4 bit quantization is packed to int8.
             
             # jpeg compression
-            if self.jpeg and input_shape[-1] != 2: # except the final logic
+            if self.jpeg and input_shape[-1] != 2: # except the final logit layer
                 if len(input_shape) > 2:
                 # convert the input tensor to 2D tensor
                     if self.default_bit == 8:
                         input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item(), input_shape[-1]))
                     elif self.default_bit == 4:
-                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item() // 2, input_shape[-1]))
+                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item(), input_shape[-1] // 2))
                     else:
                         raise ValueError('The default bit should be 4 or 8')
                 else:
                     if self.default_bit == 8:
                         input_shape_tmp = input_shape
                     elif self.default_bit == 4:
-                        input_shape_tmp = torch.Size((input_shape[0] // 2, input_shape[1]))
+                        input_shape_tmp = torch.Size((input_shape[0], input_shape[1] // 2))
                     else:
                         raise ValueError('The default bit should be 4 or 8')
 
                 q_inputs[0] = q_inputs[0][:-1].view(input_shape_tmp).unsqueeze(0).to(torch.uint8).cpu() # the last byte is 0, cut it off
-                q_inputs[0] = torchvision.io.encode_jpeg(q_inputs[0]) # the type convert to 'byte'
+                q_inputs[0] = torchvision.io.encode_jpeg(q_inputs[0], quality=100) # the type convert to 'byte'
                 # compute the compress ratio
                 # original_size = torch.prod(torch.tensor(input_shape_tmp)).item()
                 # compress_size = q_inputs[0].numel()
