@@ -33,5 +33,6 @@ output/
 log/
 model/
 wandb/
+jpeg_quality/
 speed_results.json
 get_macs.json
