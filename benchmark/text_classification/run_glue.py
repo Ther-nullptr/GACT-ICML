@@ -619,7 +619,7 @@ def main():
 
     # define wandb logger
     wandb_project = f"{args.model_name_or_path.split('/')[-1]}_{args.task_name}"
-    wandb_name = f"lr_{args.learning_rate}_{args.opt_level}_lora_{args.lora}_low-bit-optimizer_{args.optimizer_4bit}_sparse-bp_{args.sparse_bp}_sparse-bp-range_{args.sparse_bp_freeze_range}_sparse-bp-layers_{args.sparse_bp_freeze_layer}_linear-probe_{args.linear_probe}"
+    wandb_name = f"lr_{args.learning_rate}_{args.opt_level}_lora_{args.lora}_low-bit-optimizer_{args.optimizer_4bit}_sparse-bp_{args.sparse_bp}_sparse-bp-range_{args.sparse_bp_freeze_range}_sparse-bp-layers_{args.sparse_bp_freeze_layer}_linear-probe_{args.linear_probe}_30"
     wandb.init(project=wandb_project, name=wandb_name)
     wandb.define_metric("train_step")
     wandb.define_metric("val_step")
