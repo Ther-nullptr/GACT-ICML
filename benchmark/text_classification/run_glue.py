@@ -256,10 +256,6 @@ def find_all_linear_names(args, model):
     return ['dense', 'key', 'value', 'query']
 
 
-def forward_hook(module, input, output):
-    print(module.name)
-    print(output.shape)
-
 def main():
     args = parse_args()
 
@@ -423,6 +419,19 @@ def main():
     if args.gact:
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
+
+        def forward_hook(module, input, output):
+            print(module.name)
+            if len(input) != 0 and type(input[0]) == torch.Tensor:
+                print(module.name)
+                quantized_data = controller.quantize_for_hook(input[0])
+                if len(quantized_data) == 5:
+                    torch.save(quantized_data[3], f"output_activations/lora/{module.name}_input.pt")
+                    print(f"saved output_activations/lora/{module.name}_input.pt")
+
+        for name, module in model.named_modules():
+            module.name = name
+            module.register_forward_hook(forward_hook)
 
     # update optimization level, this is only for logging output
     if args.ckpt:

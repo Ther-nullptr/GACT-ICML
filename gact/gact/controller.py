@@ -90,6 +90,18 @@ class Controller:
             else:
                 return input
         return self.quantizer.quantize(input)
+    
+    def quantize_for_hook(self, input):
+        if not config.compress_activation:
+            if config.swap:
+                # swap original tensor to cpu
+                tensor_cpu = torch.empty(
+                    input.shape, dtype=input.dtype, device='cpu', pin_memory=True)
+                tensor_cpu.copy_(input, non_blocking=True)
+                return tensor_cpu
+            else:
+                return input
+        return self.quantizer.quantize_for_hook(input)
 
     def dequantize(self, input):
         if not config.compress_activation:

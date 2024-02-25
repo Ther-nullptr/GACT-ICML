@@ -170,6 +170,83 @@ class Quantizer:
             # increase the ref count
             self.ptr_qtensor_map[key][1] += 1
         return True, is_dropout_mask, key, input_shape, tid
+    
+    def quantize_for_hook(self, input):
+        quantize, is_dropout_mask = self.check_quantize(input)
+
+        if not quantize:
+            return False, input
+
+        # special case: use 1 bit to quantize dropout mask
+        if is_dropout_mask:
+            q_inputs = op_quantize_mask(input)
+            return True, is_dropout_mask, q_inputs
+
+        tid = self.tid
+        self.tid += 1
+        input_shape = input.shape
+
+        key = self.generate_tensor_key(input, tid)
+        self.layer_key_map[tid] = key
+        skip_quantize = key in self.ptr_qtensor_map
+
+        if not skip_quantize:
+            if self.iter == 0:
+                bit = self.default_bit
+                self.bits[tid] = bit
+                self.dims[tid] = input.numel()
+                self.seeds[tid] = tid
+            else:
+                bit = self.bits[tid]
+            
+            # quantize
+            q_inputs = op_quantize(
+                input, bit, self.seeds[tid] + self.seed_iter) #! where the true value is stored, [0]: int data, [1]: quantize bit, [2][3]: like scaling factors. Notice that [0]: int data is stored in a list type. Also, 2/4 bit quantization is packed to int8.
+            
+            # jpeg compression
+            if self.jpeg and input_shape[-1] != 2: # except the final logit layer
+                if len(input_shape) > 2:
+                # convert the input tensor to 2D tensor
+                    if self.default_bit == 8:
+                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item(), input_shape[-1]))
+                    elif self.default_bit == 4:
+                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item(), input_shape[-1] // 2))
+                    else:
+                        raise ValueError('The default bit should be 4 or 8')
+                else:
+                    if self.default_bit == 8:
+                        input_shape_tmp = input_shape
+                    elif self.default_bit == 4:
+                        input_shape_tmp = torch.Size((input_shape[0], input_shape[1] // 2))
+                    else:
+                        raise ValueError('The default bit should be 4 or 8')
+
+                q_inputs[0] = q_inputs[0][:-1].view(input_shape_tmp).unsqueeze(0).to(torch.uint8).cpu() # the last byte is 0, cut it off
+                q_inputs[0] = torchvision.io.encode_jpeg(q_inputs[0], quality=50) # the type convert to 'byte'
+                # compute the compress ratio
+                original_size = torch.prod(torch.tensor(input_shape_tmp)).item()
+                compress_size = q_inputs[0].numel()
+                print('compression ratio: ', original_size / compress_size)
+
+            if self.swap:
+                #  with torch.cuda.stream(self.swap_out_stream):
+                # self.swap_out_stream.wait_stream(self.compute_stream)
+                q_input_cpu = torch.empty(
+                    q_inputs[0].shape,
+                    dtype=q_inputs[0].dtype,
+                    device="cpu",
+                    pin_memory=True,
+                )
+                q_input_cpu.copy_(q_inputs[0], non_blocking=True)
+                q_input_gpu = q_inputs[0]
+                del q_input_gpu
+                q_inputs[0] = q_input_cpu
+            self.ptr_qtensor_map[key] = [q_inputs, 1, tid]
+        else:
+            # increase the ref count
+            self.ptr_qtensor_map[key][1] += 1
+        return True, is_dropout_mask, key, q_inputs[0][:-1].view(input_shape), tid
+
 
     def dequantize(self, input):
         exit(0)
