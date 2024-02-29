@@ -18,6 +18,9 @@ class DCTProcessor(torch.nn.Module):
     # DCT
     x = x.to(torch.float32)
     C = torch.matmul(self.dct_base, x) 
+    # let quant_matrix's shape to match the shape of C
+    len_C = len(C.shape)
+    self.quant_matrix = self.quant_matrix.view([1] * (len_C - 2) + [-1] + [1])
     # quantize then dequantize
     quantized_C = torch.round(C / self.quant_matrix) * self.quant_matrix 
     # IDCT

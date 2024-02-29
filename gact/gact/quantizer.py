@@ -137,6 +137,7 @@ class Quantizer:
             # jpeg compression
             if (self.jpeg or self.dct1d) and input_shape[-1] != 2: # except the final logit layer
                 if self.default_bit == 8:
+                    import copy
                     # We know the original data [32, 128, 768]
                     # JPEG: [768, 1, 64 * 64] -> [32, 2, 12, 64 * 64] -> [32, 2, 64, 12, 64] -> [32, 128, 768] -> [32, 16, 8, 96, 8] -> [32, 16, 96, 8, 8]
                     # DCT1d: [768, 1, 64 * 64] -> [32, 2, 12, 64 * 64] -> [32, 2, 64, 12, 64] -> [32, 128, 768] -> [32, 2, 64, 768]
@@ -150,8 +151,10 @@ class Quantizer:
                     elif self.dct1d:
                         # split the -2 dimension into 64 chunks
                         shape_for_dct1d = input_shape[:-2] + (group_size_1, 64, input_shape[-1])
-                        q_inputs[0] = q_inputs[0][:-1].view(-1, group_size_1, group_size_2, 64, 64).permute(0, 1, 3, 2, 4) # the order is right now, [32, 2, 64, 12, 64]
-                        q_inputs[0] = q_inputs[0].contiguous().view(shape_for_dct1d) # [32, 2, 64, 768]
+                        q_inputs_0 = q_inputs[0][:-1]
+                        q_inputs_0 = q_inputs_0.reshape(-1, group_size_1, group_size_2, 64, 64)
+                        q_inputs_0 = q_inputs_0.permute(0, 1, 3, 2, 4).contiguous() # the order is right now, [32, 2, 64, 12, 64]
+                        q_inputs_0 = q_inputs_0.reshape(shape_for_dct1d) # [32, 2, 64, 768]
 
                     # the compress
                     if self.jpeg:
@@ -159,8 +162,8 @@ class Quantizer:
                         q_inputs[0] = q_inputs[0].flatten()
 
                     elif self.dct1d:
-                        q_inputs[0] = self.dct_processor(q_inputs[0]).to(torch.int8)
-                        q_inputs[0] = q_inputs[0].flatten()
+                        q_inputs_0 = self.dct_processor(q_inputs[0]).to(torch.int8)
+                        q_inputs[0] = q_inputs_0.flatten()
 
                 else:
                     raise ValueError("JPEG or DCT1D compression only supports 8-bit quantization")

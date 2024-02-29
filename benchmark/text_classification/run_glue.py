@@ -362,7 +362,6 @@ def main():
                 bnb_4bit_quant_type="nf4",
                 llm_int8_skip_modules=["classifier"]
             ),
-            load_in_4bit=True, 
             ignore_mismatched_sizes=True, 
             device_map="auto",
         )

@@ -23,7 +23,7 @@ def no_scheme_quantize_pack(input, q_bit, seed):
         # to divide the last 2 dimensional into 64 * 64 chunks
         if len(input_shape) < 3:
             input_groups = input.unsqueeze(0)
-        input_groups = input.view(-1, input_shape[-2] // 64, 64, input_shape[-1] // 64, 64).permute(0, 1, 3, 2, 4).reshape(-1, 64 * 64)
+        input_groups = input.view(-1, input_shape[-2] // 64, 64, input_shape[-1] // 64, 64).permute(0, 1, 3, 2, 4).contiguous().reshape(-1, 64 * 64).contiguous()
     else:
         input_groups = input.reshape(-1, config.group_size)  # [32, 128, 768] -> [12288, 1, 256]
           
