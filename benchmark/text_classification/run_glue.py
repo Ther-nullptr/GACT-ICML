@@ -100,6 +100,9 @@ total_flops_intensity = 0
 total_forward_flops = 0
 total_backward_flops = 0
 
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a text classification task")
     parser.add_argument(
