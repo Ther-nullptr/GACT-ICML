@@ -35,5 +35,6 @@ model/
 wandb/
 jpeg_quality/
 output_activations/
+output_activations_lora/
 speed_results.json
 get_macs.json
