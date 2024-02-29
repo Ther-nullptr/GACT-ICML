@@ -22,7 +22,7 @@ class Controller:
             default_bit = 8
 
         self.quantizer = Quantizer(
-            default_bit=default_bit, swap=config.swap, prefetch=config.prefetch, jpeg=config.jpeg, fake_quant=config.fake_quant)
+            default_bit=default_bit, swap=config.swap, prefetch=config.prefetch, jpeg=config.jpeg, dct1d=config.dct1d, quality=config.quality)
         # does not quantize model parameters
         self.quantizer.filter_tensors(model.named_parameters())
 
@@ -36,6 +36,8 @@ class Controller:
         self.iter = 0
         
         self.jpeg = config.jpeg
+        self.dct1d = config.dct1d
+        self.quality = config.quality
 
     def __del__(self):
         pass

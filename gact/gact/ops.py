@@ -9,14 +9,23 @@ import gact.cpp_extension.minimax as ext_minimax
 from torch.utils.checkpoint import checkpoint
 
 def no_scheme_quantize_pack(input, q_bit, seed):
-    N = (input.numel() + config.group_size - 1) //  config.group_size
+    input_shape = input.shape
+    N = (input.numel() + config.group_size - 1) // config.group_size
     num_ele = N * config.group_size
     pad_num = num_ele - input.numel() 
     if pad_num > 0:
         input = torch.cat([input.reshape(1, -1), torch.zeros([1, pad_num], 
                                             dtype=input.dtype, device=input.device)], dim=1)
 
-    input_groups = input.reshape(-1, config.group_size)  
+    # note: when the group_size is 64 * 64, it means that we are using jpeg/dct1d quantization
+    if config.group_size == 64 * 64:
+        # [32, 128, 768] -> [32, 2, 64, 12, 64] -> [32, 2, 12, 64, 64] -> [768, 64 * 64] -> [768, 1, 64 * 64]
+        # to divide the last 2 dimensional into 64 * 64 chunks
+        if len(input_shape) < 3:
+            input_groups = input.unsqueeze(0)
+        input_groups = input.view(-1, input_shape[-2] // 64, 64, input_shape[-1] // 64, 64).permute(0, 1, 3, 2, 4).reshape(-1, 64 * 64)
+    else:
+        input_groups = input.reshape(-1, config.group_size)  # [32, 128, 768] -> [12288, 1, 256]
           
     if q_bit == 32:  # TODO, use kernel to optimize this
         q_min = input_groups.min(dim=-1, keepdim=True).values

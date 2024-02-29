@@ -1,12 +1,12 @@
 import torch
-from utils import get_dct_matrix, get_dqf_matrix
+from gact.utils import get_dct_matrix, get_dqf_matrix
 
 class DCTProcessor(torch.nn.Module):
   def __init__(self, quality=75):
     super(DCTProcessor, self).__init__()
     self.quality = quality
-    self.quant_matrix = get_dqf_matrix(quality, flatten=True)
-    self.dct_base = get_dct_matrix(64)
+    self.quant_matrix = get_dqf_matrix(quality, flatten=True).to('cuda')
+    self.dct_base = get_dct_matrix(64).to('cuda')
 
   def forward(self, x):
     '''
@@ -16,6 +16,7 @@ class DCTProcessor(torch.nn.Module):
     # then, the following vector must be viewed as a K-dimension 64 matrix
     '''
     # DCT
+    x = x.to(torch.float32)
     C = torch.matmul(self.dct_base, x) 
     # quantize then dequantize
     quantized_C = torch.round(C / self.quant_matrix) * self.quant_matrix 

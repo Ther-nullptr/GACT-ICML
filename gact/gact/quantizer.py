@@ -1,10 +1,12 @@
 import torch
+import wandb
 import torchvision
 from gact.conf import config
 from gact.ops import op_quantize, op_dequantize, op_quantize_mask, op_dequantize_mask
 from gact.utils import uniform_sample, compute_tensor_bytes
-import wandb
 
+from gact.jpeg_processor import JPEGProcessor
+from gact.dct_processor import DCTProcessor
 
 class Quantizer:
     """
@@ -13,11 +15,11 @@ class Quantizer:
     prefetch: if turned on, activation of the previous layer will be prefetched. the parameter is meaningful only when swap is True
     """
 
-    def __init__(self, default_bit, swap, prefetch, jpeg, fake_quant):
+    def __init__(self, default_bit, swap, prefetch, jpeg, dct1d, quality):
         self.unrelated_tensors = set()  # record the tensors that should not be quantized
         self.default_bit = default_bit
         self.jpeg = jpeg  # for jpeg compression
-        self.fake_quant = fake_quant
+        self.dct1d = dct1d
         self.swap = swap
         if swap:
             self.swap_out_stream = torch.cuda.Stream()
@@ -40,6 +42,9 @@ class Quantizer:
         self.iter = 0  # total number of iterations, including the extra inter for auto precision
         # iteration for seed, share the same seed_iter for the same auto precision adaptive step
         self.seed_iter = 0
+
+        self.jpeg_processor = JPEGProcessor(quality)
+        self.dct_processor = DCTProcessor(quality)
 
     def filter_tensors(self, pairs):
         for _, v in pairs:
@@ -122,39 +127,45 @@ class Quantizer:
                 self.seeds[tid] = tid
             else:
                 bit = self.bits[tid]
-            
+
             # quantize
             q_inputs = op_quantize(
                 input, bit, self.seeds[tid] + self.seed_iter) #! where the true value is stored, [0]: int data, [1]: quantize bit, [2][3]: like scaling factors. Notice that [0]: int data is stored in a list type. Also, 2/4 bit quantization is packed to int8.
             
-            # jpeg compression
-            if self.jpeg and input_shape[-1] != 2: # except the final logit layer
-                if len(input_shape) > 2:
-                # convert the input tensor to 2D tensor
-                    if self.default_bit == 8:
-                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item(), input_shape[-1]))
-                    elif self.default_bit == 4:
-                        input_shape_tmp = torch.Size((torch.prod(torch.tensor(input_shape[:-1])).item(), input_shape[-1] // 2))
-                    else:
-                        raise ValueError('The default bit should be 4 or 8')
-                else:
-                    if self.default_bit == 8:
-                        input_shape_tmp = input_shape
-                    elif self.default_bit == 4:
-                        input_shape_tmp = torch.Size((input_shape[0], input_shape[1] // 2))
-                    else:
-                        raise ValueError('The default bit should be 4 or 8')
+            # after quantize the jpeg or dct data, the data order is wrong now
 
-                q_inputs[0] = q_inputs[0][:-1].view(input_shape_tmp).unsqueeze(0).to(torch.uint8).cpu() # the last byte is 0, cut it off
-                q_inputs[0] = torchvision.io.encode_jpeg(q_inputs[0], quality=30) # the type convert to 'byte'
-                # compute the compress ratio
-                # original_size = torch.prod(torch.tensor(input_shape_tmp)).item()
-                # compress_size = q_inputs[0].numel()
-                # print('compression ratio: ', original_size / compress_size)
+            # jpeg compression
+            if (self.jpeg or self.dct1d) and input_shape[-1] != 2: # except the final logit layer
+                if self.default_bit == 8:
+                    # We know the original data [32, 128, 768]
+                    # JPEG: [768, 1, 64 * 64] -> [32, 2, 12, 64 * 64] -> [32, 2, 64, 12, 64] -> [32, 128, 768] -> [32, 16, 8, 96, 8] -> [32, 16, 96, 8, 8]
+                    # DCT1d: [768, 1, 64 * 64] -> [32, 2, 12, 64 * 64] -> [32, 2, 64, 12, 64] -> [32, 128, 768] -> [32, 2, 64, 768]
+                    group_size_1 = input_shape[-2] // 64
+                    group_size_2 = input_shape[-1] // 64
+                    if self.jpeg:
+                        jpeg_size_1 = input_shape[-2] // 8
+                        jpeg_size_2 = input_shape[-1] // 8
+                        q_inputs[0] = q_inputs[0][:-1].view(-1, group_size_1, group_size_2, 64, 64).permute(0, 1, 3, 2, 4) # the order is right now, [32, 2, 64, 12, 64]
+                        q_inputs[0] = q_inputs[0].view(-1, jpeg_size_1, 8, jpeg_size_2, 8).permute(0, 1, 3, 2, 4).contiguous() # [32, 16, 8, 96, 8] -> [32, 16, 96, 8, 8]
+                    elif self.dct1d:
+                        # split the -2 dimension into 64 chunks
+                        shape_for_dct1d = input_shape[:-2] + (group_size_1, 64, input_shape[-1])
+                        q_inputs[0] = q_inputs[0][:-1].view(-1, group_size_1, group_size_2, 64, 64).permute(0, 1, 3, 2, 4) # the order is right now, [32, 2, 64, 12, 64]
+                        q_inputs[0] = q_inputs[0].contiguous().view(shape_for_dct1d) # [32, 2, 64, 768]
+
+                    # the compress
+                    if self.jpeg:
+                        q_inputs[0] = self.jpeg_processor(q_inputs[0]).to(torch.int8).permute(0, 1, 3, 2, 4).contiguous() # permute back
+                        q_inputs[0] = q_inputs[0].flatten()
+
+                    elif self.dct1d:
+                        q_inputs[0] = self.dct_processor(q_inputs[0]).to(torch.int8)
+                        q_inputs[0] = q_inputs[0].flatten()
+
+                else:
+                    raise ValueError("JPEG or DCT1D compression only supports 8-bit quantization")
 
             if self.swap:
-                #  with torch.cuda.stream(self.swap_out_stream):
-                # self.swap_out_stream.wait_stream(self.compute_stream)
                 q_input_cpu = torch.empty(
                     q_inputs[0].shape,
                     dtype=q_inputs[0].dtype,
@@ -192,12 +203,6 @@ class Quantizer:
         # compute waits until prefetch finishes
         if self.prefetch and self.swap:
             self.end_prefetch_event.wait(self.compute_stream)
-
-        # decode jpeg
-        if self.jpeg and q_inputs[0].dtype == torch.uint8:
-            # print('decompress')
-            q_inputs[0] = torchvision.io.decode_jpeg(q_inputs[0], device='cuda')
-            q_inputs[0] = q_inputs[0].flatten().to(torch.int8)
 
         if not q_inputs[0].is_cuda:
             q_inputs[0] = q_inputs[0].cuda(non_blocking=False)

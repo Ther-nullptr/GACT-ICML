@@ -1,5 +1,5 @@
 import torch
-from utils import get_dct_matrix, get_dqf_matrix
+from gact.utils import get_dct_matrix, get_dqf_matrix
 
 class JPEGProcessor(torch.nn.Module):
   def __init__(self, quality=75):
@@ -21,6 +21,7 @@ class JPEGProcessor(torch.nn.Module):
     quantized_C = torch.round(C / self.quant_matrix) * self.quant_matrix 
     # IDCT
     P = torch.round(torch.matmul(torch.matmul(self.dct_base.T, quantized_C), self.dct_base))
+
     return P
 
 

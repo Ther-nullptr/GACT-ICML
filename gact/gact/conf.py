@@ -10,14 +10,42 @@ def set_optimization_level(level):
     elif level == 'L1.2':    # fixed 2-bit
         config.auto_prec = False
         config.bit = 2
-    elif level == 'L1.3':    # fixed 8-bit + jpeg
+    elif level == 'LJPEG+75':
         config.auto_prec = False
         config.bit = 8
         config.jpeg = True
-    elif level == 'L1.4':    # fixed 4-bit + jpeg
+        config.group_size = 64 * 64 
+        config.quality = 75
+    elif level == 'LJPEG+50':
         config.auto_prec = False
-        config.bit = 4   
+        config.bit = 8   
         config.jpeg = True
+        config.group_size = 64 * 64
+        config.quality = 50
+    elif level == 'LJPEG+30':
+        config.auto_prec = False
+        config.bit = 8   
+        config.jpeg = True
+        config.group_size = 64 * 64
+        config.quality = 30
+    elif level == 'LDCT+75':
+        config.auto_prec = False
+        config.bit = 8
+        config.dct1d = True
+        config.group_size = 64 * 64 
+        config.quality = 75
+    elif level == 'LDCT+50':
+        config.auto_prec = False
+        config.bit = 8   
+        config.dct1d = True
+        config.group_size = 64 * 64
+        config.quality = 50
+    elif level == 'LDCT+30':
+        config.auto_prec = False
+        config.bit = 8   
+        config.dct1d = True
+        config.group_size = 64 * 64
+        config.quality = 30
     elif level == 'L2':  # auto precision 4-bit
         config.auto_prec = True
         config.bit = 4
@@ -81,7 +109,8 @@ class QuantizationConfig:
         
         # JPEG compression
         self.jpeg = False
-        self.fake_quant = False
+        self.dct1d = False
+        self.quality = 75
 
 
 config = QuantizationConfig()
