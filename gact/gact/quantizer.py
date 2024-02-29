@@ -127,17 +127,31 @@ class Quantizer:
                 self.seeds[tid] = tid
             else:
                 bit = self.bits[tid]
-
-            # quantize
-            q_inputs = op_quantize(
-                input, bit, self.seeds[tid] + self.seed_iter) #! where the true value is stored, [0]: int data, [1]: quantize bit, [2][3]: like scaling factors. Notice that [0]: int data is stored in a list type. Also, 2/4 bit quantization is packed to int8.
-            
-            # after quantize the jpeg or dct data, the data order is wrong now
+            print(input_shape)
+            # due to some unknown reason, we should quantize manually when use jpeg/dct1d
+            if (self.jpeg or self.dct1d):
+                # [32, 128, 768] -> [32, 2, 64, 12, 64] -> [32, 2, 12, 64, 64] -> [768, 64 * 64] -> [768, 1, 64 * 64]
+                # to divide the last 2 dimensional into 64 * 64 chunks
+                if len(input_shape) < 3:
+                    input = input.unsqueeze(0)
+                input_groups = input.view(-1, input_shape[-2] // 64, 64, input_shape[-1] // 64, 64).permute(0, 1, 3, 2, 4).contiguous().reshape(-1, 64 * 64).contiguous()
+                
+                # quantize the last dimension(to int8)
+                s = (input_groups.max(dim=-1, keepdim=True).values - input_groups.min(dim=-1, keepdim=True).values) / 255
+                r_min = input_groups.min(dim=-1, keepdim=True).values
+                z = - r_min / s - 128
+                input_groups = torch.round(input_groups / s + z).to(torch.int8)
+                q_inputs = [input_groups, 8, s, z] #! different from the original code
+                
+            else:
+            # quantize use original kernel
+                q_inputs = op_quantize(
+                    input, bit, self.seeds[tid] + self.seed_iter) #! where the true value is stored, [0]: int data, [1]: quantize bit, [2][3]: like scaling factors. Notice that [0]: int data is stored in a list type. Also, 2/4 bit quantization is packed to int8.
 
             # jpeg compression
             if (self.jpeg or self.dct1d) and input_shape[-1] != 2: # except the final logit layer
                 if self.default_bit == 8:
-                    import copy
+
                     # We know the original data [32, 128, 768]
                     # JPEG: [768, 1, 64 * 64] -> [32, 2, 12, 64 * 64] -> [32, 2, 64, 12, 64] -> [32, 128, 768] -> [32, 16, 8, 96, 8] -> [32, 16, 96, 8, 8]
                     # DCT1d: [768, 1, 64 * 64] -> [32, 2, 12, 64 * 64] -> [32, 2, 64, 12, 64] -> [32, 128, 768] -> [32, 2, 64, 768]
@@ -151,10 +165,9 @@ class Quantizer:
                     elif self.dct1d:
                         # split the -2 dimension into 64 chunks
                         shape_for_dct1d = input_shape[:-2] + (group_size_1, 64, input_shape[-1])
-                        q_inputs_0 = q_inputs[0][:-1]
-                        q_inputs_0 = q_inputs_0.reshape(-1, group_size_1, group_size_2, 64, 64)
-                        q_inputs_0 = q_inputs_0.permute(0, 1, 3, 2, 4).contiguous() # the order is right now, [32, 2, 64, 12, 64]
-                        q_inputs_0 = q_inputs_0.reshape(shape_for_dct1d) # [32, 2, 64, 768]
+                        q_inputs[0] = q_inputs[0].reshape(-1, group_size_1, group_size_2, 64, 64)
+                        q_inputs[0] = q_inputs[0].permute(0, 1, 3, 2, 4).contiguous() # the order is right now, [32, 2, 64, 12, 64]
+                        q_inputs[0] = q_inputs[0].reshape(shape_for_dct1d) # [32, 2, 64, 768]
 
                     # the compress
                     if self.jpeg:
@@ -162,8 +175,7 @@ class Quantizer:
                         q_inputs[0] = q_inputs[0].flatten()
 
                     elif self.dct1d:
-                        q_inputs_0 = self.dct_processor(q_inputs[0]).to(torch.int8)
-                        q_inputs[0] = q_inputs_0.flatten()
+                        q_inputs[0] = self.dct_processor(q_inputs[0]).to(torch.int8)
 
                 else:
                     raise ValueError("JPEG or DCT1D compression only supports 8-bit quantization")
@@ -225,8 +237,12 @@ class Quantizer:
                                 non_blocking=True
                             )
                     self.end_prefetch_event.record()
-
-        ret = op_dequantize(q_inputs, input_shape)
+                    
+        if (self.jpeg or self.dct1d):
+            q, _, s, z = q_inputs
+            ret = s * (q.to(torch.float32) - z)
+        else:
+            ret = op_dequantize(q_inputs, input_shape)
 
         ref_cnt -= 1
         if ref_cnt < 0:
