@@ -381,8 +381,6 @@ def main():
         if args.ckpt:
             model.gradient_checkpointing_enable()
 
-    print(model)
-
     if args.lora:
         peft_config = LoraConfig(
             task_type="SEQ_CLS", 
@@ -412,8 +410,6 @@ def main():
         for name, param in model.named_parameters():
             if 'classifier' not in name:
                 param.requires_grad = False
-    
-    print(model)
 
     # print trainable parameter ratio:
     total_params = sum(p.numel() for p in model.parameters())
@@ -425,22 +421,29 @@ def main():
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
 
+    replace_list = ["lora_A"]
     if 'JPEG' in args.opt_level or 'DCT' in args.opt_level: #! use another method -- linear replace
         # replace all the linear layers with compressed based linear layers
         for name, module in model.named_modules():
-            if isinstance(module, torch.nn.Linear):
-                original_weight_data = module.weight.data
-                original_bias_data = module.bias.data if module.bias is not None else None
-                new_module = EfficientMemoryLinear(
-                    in_features=module.in_features,
-                    out_features=module.out_features,
-                    bias=module.bias is not None,
-                    compress_type='JPEG' if 'JPEG' in args.opt_level else 'DCT',
-                    compress_quality=int(args.opt_level.split('+')[-1]),
-                )
-                new_module.weight.data = original_weight_data
-                if module.bias is not None:
-                    new_module.bias.data = original_bias_data
+            if (name.split(".")[-1] in replace_list):
+                if isinstance(module, torch.nn.ModuleDict):
+                    for key, submodule in module.items():
+                        if isinstance(submodule, torch.nn.Linear):
+                            original_weight_data = submodule.weight.data
+                            original_bias_data = submodule.bias.data if submodule.bias is not None else None
+                            new_module = EfficientMemoryLinear(
+                                in_features=submodule.in_features,
+                                out_features=submodule.out_features,
+                                bias=submodule.bias is not None,
+                                compress_type='JPEG' if 'JPEG' in args.opt_level else 'DCT',
+                                compress_quality=int(args.opt_level.split('+')[-1]),
+                            )
+                            new_module.weight.data = original_weight_data
+                            if submodule.bias is not None:
+                                new_module.bias.data = original_bias_data
+                            module[key] = new_module
+    
+    print(model)
 
     # update optimization level, this is only for logging output
     if args.ckpt:
@@ -639,7 +642,7 @@ def main():
 
     # define wandb logger
     wandb_project = f"{args.model_name_or_path.split('/')[-1]}_{args.task_name}"
-    wandb_name = f"lr_{args.learning_rate}_{args.opt_level}_lora_{args.lora}_low-bit-optimizer_{args.optimizer_4bit}_sparse-bp_{args.sparse_bp}_sparse-bp-range_{args.sparse_bp_freeze_range}_sparse-bp-layers_{args.sparse_bp_freeze_layer}_linear-probe_{args.linear_probe}_30"
+    wandb_name = f"lr_{args.learning_rate}_{args.opt_level}_lora_{args.lora}_low-bit-optimizer_{args.optimizer_4bit}_sparse-bp_{args.sparse_bp}_sparse-bp-range_{args.sparse_bp_freeze_range}_sparse-bp-layers_{args.sparse_bp_freeze_layer}_linear-probe_{args.linear_probe}"
     wandb.init(project=wandb_project, name=wandb_name)
     wandb.define_metric("train_step")
     wandb.define_metric("val_step")

@@ -19,7 +19,7 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
             output = x @ w.transpose(0, 1) + b[None, ...] # TODO: what is the dimension of b?
         else:
             output = x @ w.transpose(0, 1)
-
+        ctx.original_x = x
         # shape preparation for DCT
         input_shape = x.shape
         ctx.input_shape = input_shape
@@ -58,6 +58,7 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
             x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
             x = x.reshape(shape_for_dct1d) # [32, 2, 64, 768]
             x = dct_processor(x).to(torch.int8)
+            x = x.reshape(input_shape) # [32, 128, 768]
 
         # if the compress type is not JPEG or DCT, then the input will not be compressed(do nothing)
         
@@ -69,10 +70,28 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
         use_bias = ctx.use_bias
         x, w = ctx.saved_tensors
         s, r_min, z = ctx.quant_state
+        input_shape = ctx.input_shape
         
         # dequantize the cached activation
-        if ctx.compress_type == 'JPEG' or ctx.compress_type == 'DCT':
+        if ctx.compress_type == 'JPEG':
+            pass
+        
+        elif ctx.compress_type == 'DCT':
+            group_size_1 = input_shape[-2] // 64
+            group_size_2 = input_shape[-1] // 64
+            # convert 
+            x = x.view(-1, group_size_1, 64, group_size_2, 64)
+            x = x.permute(0, 1, 3, 2, 4)
+            x = x.reshape(-1, 64 * 64).contiguous()
+            # dequantize
             x = s * (x.to(torch.float16) - z)
+            # then convert back to the original shape
+            x = x.reshape(-1, group_size_1, group_size_2, 64, 64)
+            x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
+            x = x.reshape(input_shape)
+
+        # print(f'original x: {ctx.original_x}')
+        # print(f'dequantized x: {x}')
 
         grad_input = grad_weight = grad_bias = None
         if ctx.needs_inputs_grad[0]:
@@ -99,8 +118,8 @@ class EfficientMemoryLinear(torch.nn.Linear):
             self.weight, 
             self.bias, 
             self.bias != None, 
-            compress_type = self.compress_type,
-            jpeg_processor = self.jpeg_processor,
-            dct_processor = self.dct_processor
+            self.compress_type,
+            self.jpeg_processor,
+            self.dct_processor
         )
     
