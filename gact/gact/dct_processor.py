@@ -5,8 +5,8 @@ class DCTProcessor(torch.nn.Module):
   def __init__(self, quality=75):
     super(DCTProcessor, self).__init__()
     self.quality = quality
-    self.quant_matrix = get_dqf_matrix(quality, flatten=True).to('cuda')
-    self.dct_base = get_dct_matrix(64).to('cuda')
+    self.quant_matrix = get_dqf_matrix(quality, flatten=True).to('cuda:0')
+    self.dct_base = get_dct_matrix(64).to('cuda:0')
 
   def forward(self, x):
     '''
@@ -16,7 +16,7 @@ class DCTProcessor(torch.nn.Module):
     # then, the following vector must be viewed as a K-dimension 64 matrix
     '''
     # DCT
-    x = x.to(torch.float32)
+    x = x.to(torch.float16)
     C = torch.matmul(self.dct_base, x) 
     # let quant_matrix's shape to match the shape of C
     len_C = len(C.shape)

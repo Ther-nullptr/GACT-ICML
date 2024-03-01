@@ -11,40 +11,28 @@ def set_optimization_level(level):
         config.auto_prec = False
         config.bit = 2
     elif level == 'LJPEG+75':
-        config.auto_prec = False
-        config.bit = 8
+        config.compress_activation = False 
         config.jpeg = True
-        config.group_size = 64 * 64 
         config.quality = 75
     elif level == 'LJPEG+50':
-        config.auto_prec = False
-        config.bit = 8   
+        config.compress_activation = False 
         config.jpeg = True
-        config.group_size = 64 * 64
         config.quality = 50
     elif level == 'LJPEG+30':
-        config.auto_prec = False
-        config.bit = 8   
+        config.compress_activation = False 
         config.jpeg = True
-        config.group_size = 64 * 64
         config.quality = 30
     elif level == 'LDCT+75':
-        config.auto_prec = False
-        config.bit = 8
+        config.compress_activation = False 
         config.dct1d = True
-        config.group_size = 64 * 64 
         config.quality = 75
     elif level == 'LDCT+50':
-        config.auto_prec = False
-        config.bit = 8   
+        config.compress_activation = False 
         config.dct1d = True
-        config.group_size = 64 * 64
         config.quality = 50
     elif level == 'LDCT+30':
-        config.auto_prec = False
-        config.bit = 8   
+        config.compress_activation = False 
         config.dct1d = True
-        config.group_size = 64 * 64
         config.quality = 30
     elif level == 'L2':  # auto precision 4-bit
         config.auto_prec = True

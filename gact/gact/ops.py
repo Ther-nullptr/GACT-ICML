@@ -9,7 +9,6 @@ import gact.cpp_extension.minimax as ext_minimax
 from torch.utils.checkpoint import checkpoint
 
 def no_scheme_quantize_pack(input, q_bit, seed):
-    input_shape = input.shape
     N = (input.numel() + config.group_size - 1) // config.group_size
     num_ele = N * config.group_size
     pad_num = num_ele - input.numel() 

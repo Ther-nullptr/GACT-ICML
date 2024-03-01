@@ -59,6 +59,7 @@ import bitsandbytes as bnb
 from lpmm import optim
 
 from gact.controller import Controller
+from gact.efficient_linear import EfficientMemoryLinear
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +424,23 @@ def main():
     if args.gact:
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
+
+    if 'JPEG' in args.opt_level or 'DCT' in args.opt_level: #! use another method -- linear replace
+        # replace all the linear layers with compressed based linear layers
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.Linear):
+                original_weight_data = module.weight.data
+                original_bias_data = module.bias.data if module.bias is not None else None
+                new_module = EfficientMemoryLinear(
+                    in_features=module.in_features,
+                    out_features=module.out_features,
+                    bias=module.bias is not None,
+                    compress_type='JPEG' if 'JPEG' in args.opt_level else 'DCT',
+                    compress_quality=int(args.opt_level.split('+')[-1]),
+                )
+                new_module.weight.data = original_weight_data
+                if module.bias is not None:
+                    new_module.bias.data = original_bias_data
 
     # update optimization level, this is only for logging output
     if args.ckpt:

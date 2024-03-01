@@ -5,17 +5,18 @@ class JPEGProcessor(torch.nn.Module):
   def __init__(self, quality=75):
     super(JPEGProcessor, self).__init__()
     self.quality = quality
-    self.quant_matrix = get_dqf_matrix(quality, flatten=False)
-    self.dct_base = get_dct_matrix(8)
+    self.quant_matrix = get_dqf_matrix(quality, flatten=False).to('cuda:0')
+    self.dct_base = get_dct_matrix(8).to('cuda:0')
 
   def forward(self, x):
-    '''
-    # The matrix is quantized by following algorithm:
-    scaling_factor = 127 / (np.max(original_data))
-    original_data = np.clip(np.round((original_data) * scaling_factor), -128, 127)
-    # then, the following vector must be viewed as 8x8 matrix
-    '''
+    # '''
+    # # The matrix is quantized by following algorithm:
+    # scaling_factor = 127 / (np.max(original_data))
+    # original_data = np.clip(np.round((original_data) * scaling_factor), -128, 127)
+    # # then, the following vector must be viewed as 8x8 matrix
+    # '''
     # 2D DCT
+    x = x.to(torch.float16)
     C = torch.matmul(torch.matmul(self.dct_base, x), self.dct_base.T)
     # quantize then dequantize
     quantized_C = torch.round(C / self.quant_matrix) * self.quant_matrix 
