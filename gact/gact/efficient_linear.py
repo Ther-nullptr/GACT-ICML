@@ -19,7 +19,6 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
             output = x @ w.transpose(0, 1) + b[None, ...] # TODO: what is the dimension of b?
         else:
             output = x @ w.transpose(0, 1)
-        ctx.original_x = x
         # shape preparation for DCT
         input_shape = x.shape
         ctx.input_shape = input_shape
@@ -90,9 +89,6 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
             x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
             x = x.reshape(input_shape)
 
-        # print(f'original x: {ctx.original_x}')
-        # print(f'dequantized x: {x}')
-
         grad_input = grad_weight = grad_bias = None
         if ctx.needs_inputs_grad[0]:
             grad_input = grad_output @ w
@@ -109,7 +105,7 @@ class EfficientMemoryLinear(torch.nn.Linear):
         super().__init__(in_features, out_features, bias)
         self.compress_type = compress_type
         self.compress_quality = compress_quality
-        self.jpeg_processor = JPEGProcessor(quality=compress_quality)
+        self.jpeg_processor = None # JPEGProcessor(quality=compress_quality)
         self.dct_processor = DCTProcessor(quality=compress_quality)
         
     def forward(self, input: torch.Tensor):
