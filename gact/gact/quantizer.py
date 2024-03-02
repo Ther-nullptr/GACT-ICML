@@ -255,3 +255,15 @@ class Quantizer:
         else:
             self.ptr_qtensor_map[key] = [q_inputs, ref_cnt, key_tid]
         return ret
+
+    def quantize_jpeg(self, input):
+        pass
+
+    def dequantize_jpeg(self, input):
+        pass
+
+    def quantize_dct1d(self, input):
+        pass
+
+    def dequantize_dct1d(self, input):
+        pass

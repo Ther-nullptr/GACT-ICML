@@ -51,6 +51,7 @@ from transformers import (
 )
 from transformers.file_utils import get_full_repo_name
 from transformers.utils.versions import require_version
+from transformers.activations import GELUActivation
 
 import peft
 from peft import get_peft_model, LoraConfig, PeftType, PeftModelForSequenceClassification
@@ -60,6 +61,10 @@ from lpmm import optim
 
 from gact.controller import Controller
 from gact.efficient_linear import EfficientMemoryLinear
+from gact.efficient_gelu import EfficientMemoryGELU
+from gact.efficient_layernorm import EfficientMemoryLayerNorm
+from gact.efficient_softmax import EfficientMemorySoftmax
+from gact.efficient_dropout import EfficientMemoryDropout
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +251,47 @@ def parse_args():
     return args
 
 
+def replace_module(module):
+    for name, child in module.named_children():
+        if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features != 8):
+            original_weight_data = child.weight.data
+            original_bias_data = child.bias.data if child.bias is not None else None
+            new_child = EfficientMemoryLinear(
+                in_features=child.in_features,
+                out_features=child.out_features,
+                bias=child.bias is not None,
+                compress_type='DCT',
+                compress_quality=75,
+            )
+            new_child.weight.data = original_weight_data
+            if child.bias is not None:
+                new_child.bias.data = original_bias_data
+            setattr(module, name, new_child)
+        elif isinstance(child, GELUActivation):
+            setattr(module, name, EfficientMemoryGELU(compress_type='DCT', compress_quality=75))
+        elif isinstance(child, torch.nn.LayerNorm):
+            original_weight_data = child.weight.data
+            original_bias_data = child.bias.data
+            new_child = EfficientMemoryLayerNorm(
+                normalized_shape=child.normalized_shape,
+                eps=child.eps,
+                elementwise_affine=child.elementwise_affine,
+                bias=child.bias is not None,
+                compress_type='DCT',
+                compress_quality=75,
+            )
+            new_child.weight.data = original_weight_data
+            if child.bias is not None:
+                new_child.bias.data = original_bias_data
+            setattr(module, name, new_child)
+        elif isinstance(child, torch.nn.Softmax):
+            setattr(module, name, EfficientMemorySoftmax(-1, compress_type='DCT', compress_quality=75))
+        # elif isinstance(child, torch.nn.Dropout):
+        #     setattr(module, name, EfficientMemoryDropout(child.p))
+        else:
+            replace_module(child)
+
+
 def find_all_linear_names(args, model):
     # cls = bnb.nn.Linear4bit if args.use_fp4 == 4 else torch.nn.Linear
     # lora_module_names = set()
@@ -421,27 +467,8 @@ def main():
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
 
-    replace_list = ["lora_A"]
     if 'JPEG' in args.opt_level or 'DCT' in args.opt_level: #! use another method -- linear replace
-        # replace all the linear layers with compressed based linear layers
-        for name, module in model.named_modules():
-            if (name.split(".")[-1] in replace_list):
-                if isinstance(module, torch.nn.ModuleDict):
-                    for key, submodule in module.items():
-                        if isinstance(submodule, torch.nn.Linear):
-                            original_weight_data = submodule.weight.data
-                            original_bias_data = submodule.bias.data if submodule.bias is not None else None
-                            new_module = EfficientMemoryLinear(
-                                in_features=submodule.in_features,
-                                out_features=submodule.out_features,
-                                bias=submodule.bias is not None,
-                                compress_type='JPEG' if 'JPEG' in args.opt_level else 'DCT',
-                                compress_quality=int(args.opt_level.split('+')[-1]),
-                            )
-                            new_module.weight.data = original_weight_data
-                            if submodule.bias is not None:
-                                new_module.bias.data = original_bias_data
-                            module[key] = new_module
+        replace_module(model)
     
     print(model)
 
@@ -763,13 +790,6 @@ def main():
                     print(f"Total Forward FLOPs: {total_forward_flops / 10**12} TFLOPs")
                     print(f"Total Backward FLOPs: {total_backward_flops / 10**12} TFLOPs")
 
-                    # macs, params = profile(model, inputs=inputs_for_flops,)
-
-                    # print(f"Macs: {macs / 10**12} TFLOPs \t Params: {params / 10 ** 9} G")
-                    # out_file = "get_macs.json"
-                    # with open(out_file, 'w') as fout:
-                    #     fout.write(json.dumps([macs, params]))
-                    # print(f"save results to {out_file}")
                     exit()
                     
                 outputs = model(**batch)

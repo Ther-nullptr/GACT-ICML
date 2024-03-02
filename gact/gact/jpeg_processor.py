@@ -8,6 +8,7 @@ class JPEGProcessor(torch.nn.Module):
     self.quant_matrix = get_dqf_matrix(quality, flatten=False).to('cuda:0')
     self.dct_base = get_dct_matrix(8).to('cuda:0')
 
+  @staticmethod
   def forward(self, x):
     # '''
     # # The matrix is quantized by following algorithm:
