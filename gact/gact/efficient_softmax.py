@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from gact.jpeg_processor import JPEGProcessor
 from gact.dct_processor import DCTProcessor
 
-from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression
+from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression, naive_adjustment
 
 class EfficientMemorySoftmaxFunc(torch.autograd.Function):
     @staticmethod
@@ -16,21 +16,25 @@ class EfficientMemorySoftmaxFunc(torch.autograd.Function):
         ctx.original_shape = input.shape
         # merge the 1st and 2nd dimension
         x = x.view(-1, input.shape[-2], input.shape[-1])
-        input_shape = x.shape
-        ctx.input_shape = input_shape
         ctx.compress_type = compress_type
         ctx.needs_inputs_grad = x.requires_grad
         ctx.dim = dim
 
-        # quantization
-        x, quant_state = per_block_quantization(x, input_shape)
-        ctx.quant_state = quant_state
+        if compress_type != 'NONE':
+            input_shape = x.shape
+            ctx.input_shape = input_shape
 
-        # compression
-        if compress_type == 'JPEG':
-            x = jpeg_compression(x, input_shape, jpeg_processor)
-        elif compress_type == 'DCT':
-            x = dct_compression(x, input_shape, dct_processor)
+            # quantization
+            x, quant_state = per_block_quantization(x, input_shape)
+            ctx.quant_state = quant_state
+
+            # compression
+            if compress_type == 'JPEG':
+                x = jpeg_compression(x, input_shape, jpeg_processor)
+            elif compress_type == 'DCT':
+                x = dct_compression(x, input_shape, dct_processor)
+            elif compress_type == 'NAIVE':
+                x = naive_adjustment(x, input_shape)
   
         ctx.save_for_backward(x)
         
@@ -42,12 +46,13 @@ class EfficientMemorySoftmaxFunc(torch.autograd.Function):
         dim = ctx.dim
         quant_state = ctx.quant_state
         input_shape = ctx.input_shape
-
         grad_input = None
-        if ctx.needs_inputs_grad:
-            # dequantize the cached activation
-            x = per_block_dequantization(x, input_shape, quant_state)
 
+        if ctx.needs_inputs_grad:
+            if ctx.compress_type != 'NONE':
+                quant_state = ctx.quant_state
+                input_shape = ctx.input_shape
+                x = per_block_dequantization(x, input_shape, quant_state)
             # demerge the 1st and 2nd dimension
             x = x.view(ctx.original_shape)
             grad_input = x * (grad_output - (grad_output * x).sum(dim=dim, keepdim=True))

@@ -3,7 +3,7 @@ import bitsandbytes.functional as F
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
 
-from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression
+from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression, naive_adjustment
 
 class EfficientMemoryLinearFunc(torch.autograd.Function):
     # only suitable for batched matmul: (BxMxK) @ (KxR) -> (BxKxR) or (BxKxR) @ (RxN) -> (BxKxN)
@@ -21,20 +21,25 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
             output = x @ w.transpose(0, 1) + b[None, ...] # TODO: what is the dimension of b?
         else:
             output = x @ w.transpose(0, 1)
-        # shape preparation for DCT
-        input_shape = x.shape
-        ctx.input_shape = input_shape
 
-        # quantize the cached activation
-        x, quant_state = per_block_quantization(x, input_shape)
-        ctx.quant_state = quant_state
+        if compress_type != 'NONE':
+            # shape preparation for DCT
+            input_shape = x.shape
+            ctx.input_shape = input_shape
 
-        # compress the cached activation
-        if compress_type == 'JPEG':
-            x = jpeg_compression(x, input_shape, jpeg_processor)
+            # quantize the cached activation
+            x, quant_state = per_block_quantization(x, input_shape)
+            ctx.quant_state = quant_state
 
-        elif compress_type == 'DCT':
-            x = dct_compression(x, input_shape, dct_processor)
+            # compress the cached activation
+            if compress_type == 'JPEG':
+                x = jpeg_compression(x, input_shape, jpeg_processor)
+
+            elif compress_type == 'DCT':
+                x = dct_compression(x, input_shape, dct_processor)
+
+            elif compress_type == 'NAIVE':
+                x = naive_adjustment(x, input_shape)
 
         # if the compress type is not JPEG or DCT, then the input will not be compressed(do nothing)
         ctx.save_for_backward(x, w)
@@ -44,10 +49,10 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
     def backward(ctx, grad_output):
         use_bias = ctx.use_bias
         x, w = ctx.saved_tensors
-        quant_state = ctx.quant_state
-        input_shape = ctx.input_shape
         
-        if ctx.needs_inputs_grad[1]:
+        if ctx.needs_inputs_grad[1] and ctx.compress_type != 'NONE':
+            quant_state = ctx.quant_state
+            input_shape = ctx.input_shape
             # dequantize the cached activation
             x = per_block_dequantization(x, input_shape, quant_state)
 

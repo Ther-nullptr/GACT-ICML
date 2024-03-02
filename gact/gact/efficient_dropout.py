@@ -82,7 +82,7 @@ def _seeded_dropout_backward(
     random = tl.rand(seed, offsets)
     grad_out_keep = random > p
     # write-back
-    grad_in = tl.where(grad_out_keep, grad_out / (1 - p), 0.0)
+    grad_in = tl.where(grad_out_keep, grad_out, 0.0)
     tl.store(grad_in_ptr + offsets, grad_in, mask=mask)
 
 

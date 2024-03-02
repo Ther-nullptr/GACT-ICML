@@ -36,7 +36,7 @@ import triton.language as tl
 
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
-from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression
+from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression, naive_adjustment
 
 try:
     # This is https://github.com/NVIDIA/apex, NOT the apex on PyPi, so it
@@ -232,6 +232,7 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, normalized_shape, weight, bias, eps, compress_type, jpeg_processor, dct_processor):
         # allocate output
+        x = x.contiguous()
         y = torch.empty_like(x)
         # reshape input data into 2D tensor
         x_arg = x.reshape(-1, x.shape[-1])
@@ -249,21 +250,27 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
         _layer_norm_fwd_fused[(M, )](  #
             x_arg, y, weight, bias, mean, rstd,  #
             x_arg.stride(0), N, eps,  #
-            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps)
-        
-        input_shape = x.shape
-        ctx.input_shape = input_shape
-        ctx.compress_type = compress_type
+            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps
+        )
+
         ctx.needs_inputs_grad = x.requires_grad or weight.requires_grad or bias.requires_grad
+        ctx.compress_type = compress_type
 
-        x, quant_state = per_block_quantization(x, input_shape)
-        ctx.quant_state = quant_state
+        if compress_type != 'NONE':
+            input_shape = x.shape
+            ctx.input_shape = input_shape
+            
+            x, quant_state = per_block_quantization(x, input_shape)
+            ctx.quant_state = quant_state
 
-        if compress_type == 'JPEG':
-            x = jpeg_compression(x, input_shape, jpeg_processor)
+            if compress_type == 'JPEG':
+                x = jpeg_compression(x, input_shape, jpeg_processor)
 
-        elif compress_type == 'DCT':
-            x = dct_compression(x, input_shape, dct_processor)
+            elif compress_type == 'DCT':
+                x = dct_compression(x, input_shape, dct_processor)
+
+            elif compress_type == 'NAIVE':
+                x = naive_adjustment(x, input_shape)
 
         ctx.save_for_backward(x, weight, bias, mean, rstd)
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -275,13 +282,13 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dy):
         x, w, b, m, v = ctx.saved_tensors
-        quant_state = ctx.quant_state
-        input_shape = ctx.input_shape
-
         dx, dw, db = None, None, None
 
         if ctx.needs_inputs_grad:
-            x = per_block_dequantization(x, input_shape, quant_state)
+            if ctx.compress_type != 'NONE':
+                quant_state = ctx.quant_state
+                input_shape = ctx.input_shape
+                x = per_block_dequantization(x, input_shape, quant_state)
 
             # heuristics for amount of parallel reduction stream for DW/DB
             N = w.shape[0]
