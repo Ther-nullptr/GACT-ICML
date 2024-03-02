@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
+from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression
 
 class EfficientMemoryGELUFunc(torch.autograd.Function):
   @staticmethod
@@ -11,35 +12,15 @@ class EfficientMemoryGELUFunc(torch.autograd.Function):
     input_shape = x.shape
     ctx.input_shape = input_shape
     ctx.compress_type = compress_type
-    group_size_1 = input_shape[-2] // 64
-    group_size_2 = input_shape[-1] // 64
 
-    x = x.view(-1, input_shape[-2] // 64, 64, input_shape[-1] // 64, 64)
-    x = x.permute(0, 1, 3, 2, 4)
-    x = x.reshape(-1, 64 * 64).contiguous()
-
-    s = (x.max(dim=-1, keepdim=True).values - x.min(dim=-1, keepdim=True).values) / 255
-    r_min = x.min(dim=-1, keepdim=True).values
-    z = - r_min / s - 128
-    x = torch.round(x / s + z).to(torch.int8)
-
-    # save the quantization state
-    ctx.quant_state = (s, r_min, z)
+    x, quant_state = per_block_quantization(x, input_shape)
+    ctx.quant_state = quant_state
 
     if compress_type == 'JPEG':
-        jpeg_size_1 = input_shape[-2] // 8
-        jpeg_size_2 = input_shape[-1] // 8
-        x = x.view(-1, group_size_1, group_size_2, 64, 64).permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
-        x = x.view(-1, jpeg_size_1, 8, jpeg_size_2, 8).permute(0, 1, 3, 2, 4) # [32, 16, 8, 96, 8] -> [32, 16, 96, 8, 8]
-        x = jpeg_processor(x).to(torch.int8).permute(0, 1, 3, 2, 4)
+        x = jpeg_compression(x, input_shape, jpeg_processor)
 
     elif compress_type == 'DCT':
-        shape_for_dct1d = input_shape[:-2] + (group_size_1, 64, input_shape[-1])
-        x = x.reshape(-1, group_size_1, group_size_2, 64, 64)
-        x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
-        x = x.reshape(shape_for_dct1d) # [32, 2, 64, 768]
-        x = dct_processor(x).to(torch.int8)
-        x = x.reshape(input_shape) # [32, 128, 768]
+        x = dct_compression(x, input_shape, dct_processor)
 
     ctx.save_for_backward(x)
     return result
@@ -47,32 +28,25 @@ class EfficientMemoryGELUFunc(torch.autograd.Function):
   @staticmethod
   def backward(ctx, grad_output):
     x, = ctx.saved_tensors
-    s, r_min, z = ctx.quant_state
+    quant_state = ctx.quant_state
     input_shape = ctx.input_shape
 
-    # dequantize the cached activation
-    if ctx.compress_type == 'JPEG':
-      pass
-    
-    elif ctx.compress_type == 'DCT':
-      group_size_1 = input_shape[-2] // 64
-      group_size_2 = input_shape[-1] // 64
-      # convert 
-      x = x.view(-1, group_size_1, 64, group_size_2, 64)
-      x = x.permute(0, 1, 3, 2, 4)
-      x = x.reshape(-1, 64 * 64).contiguous()
-      # dequantize
-      x = s * (x.to(torch.float16) - z)
-      # then convert back to the original shape
-      x = x.reshape(-1, group_size_1, group_size_2, 64, 64)
-      x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
-      x = x.reshape(input_shape)    
-
     grad_input = None
+
     if ctx.needs_inputs_grad:
-      exp_term = torch.exp(-0.5 * x * x)
-      grad_input = F.gelu(x) + 0.5 * x * exp_term / 1.41421
-      grad_input = grad_input * grad_output
+      # dequantize the cached activation
+      if ctx.compress_type == 'JPEG':
+          pass
+      
+      elif ctx.compress_type == 'DCT':
+          x = per_block_dequantization(x, input_shape, quant_state)
+
+      grad_input = None
+      if ctx.needs_inputs_grad:
+        exp_term = torch.exp(-0.5 * x * x)
+        grad_input = F.gelu(x) + 0.5 * x * exp_term / 1.41421
+        grad_input = grad_input * grad_output
+
     return grad_input, None, None, None
   
 

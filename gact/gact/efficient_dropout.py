@@ -61,6 +61,7 @@ def _seeded_dropout(
     output = tl.where(x_keep, x / (1 - p), 0.0)
     tl.store(output_ptr + offsets, output, mask=mask)
 
+
 @triton.jit
 def _seeded_dropout_backward(
     grad_out_ptr,
@@ -83,6 +84,7 @@ def _seeded_dropout_backward(
     # write-back
     grad_in = tl.where(grad_out_keep, grad_out / (1 - p), 0.0)
     tl.store(grad_in_ptr + offsets, grad_in, mask=mask)
+
 
 class EfficientMemoryDropoutFunc(torch.autograd.Function):
     @staticmethod
@@ -115,7 +117,11 @@ class EfficientMemoryDropout(torch.nn.Module):
         self.seed = torch.randint(0, 2**32, (1,)).item()
 
     def forward(self, x):
-        return EfficientMemoryDropoutFunc.apply(x, self.p, self.seed)
+        # notice that dropout works differently in training and evaluation mode
+        if self.training:
+            return EfficientMemoryDropoutFunc.apply(x, self.p, self.seed)
+        else:
+            return x
     
 
 if __name__ == '__main__':

@@ -36,6 +36,7 @@ import triton.language as tl
 
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
+from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression
 
 try:
     # This is https://github.com/NVIDIA/apex, NOT the apex on PyPi, so it
@@ -250,39 +251,19 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
             x_arg.stride(0), N, eps,  #
             BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps)
         
-        # compress then save x
         input_shape = x.shape
         ctx.input_shape = input_shape
         ctx.compress_type = compress_type
-        group_size_1 = input_shape[-2] // 64
-        group_size_2 = input_shape[-1] // 64
+        ctx.needs_inputs_grad = x.requires_grad or weight.requires_grad or bias.requires_grad
 
-        x = x.view(-1, input_shape[-2] // 64, 64, input_shape[-1] // 64, 64)
-        x = x.permute(0, 1, 3, 2, 4)
-        x = x.reshape(-1, 64 * 64).contiguous()
-
-        s = (x.max(dim=-1, keepdim=True).values - x.min(dim=-1, keepdim=True).values) / 255
-        r_min = x.min(dim=-1, keepdim=True).values
-        z = - r_min / s - 128
-        x = torch.round(torch.clamp(x / s + z, min=-128, max=127)).to(torch.int8)
-
-        # save the quantization state
-        ctx.quant_state = (s, r_min, z)
+        x, quant_state = per_block_quantization(x, input_shape)
+        ctx.quant_state = quant_state
 
         if compress_type == 'JPEG':
-            jpeg_size_1 = input_shape[-2] // 8
-            jpeg_size_2 = input_shape[-1] // 8
-            x = x.view(-1, group_size_1, group_size_2, 64, 64).permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
-            x = x.view(-1, jpeg_size_1, 8, jpeg_size_2, 8).permute(0, 1, 3, 2, 4) # [32, 16, 8, 96, 8] -> [32, 16, 96, 8, 8]
-            x = jpeg_processor(x).to(torch.int8).permute(0, 1, 3, 2, 4)
+            x = jpeg_compression(x, input_shape, jpeg_processor)
 
         elif compress_type == 'DCT':
-            shape_for_dct1d = input_shape[:-2] + (group_size_1, 64, input_shape[-1])
-            x = x.reshape(-1, group_size_1, group_size_2, 64, 64)
-            x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
-            x = x.reshape(shape_for_dct1d) # [32, 2, 64, 768]
-            x = torch.clamp(dct_processor(x), -128, 127).to(torch.int8)
-            x = x.reshape(input_shape) # [32, 128, 768]
+            x = dct_compression(x, input_shape, dct_processor)
 
         ctx.save_for_backward(x, weight, bias, mean, rstd)
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -294,56 +275,49 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dy):
         x, w, b, m, v = ctx.saved_tensors
-        s, r_min, z = ctx.quant_state
+        quant_state = ctx.quant_state
         input_shape = ctx.input_shape
 
-        # dequantize the cached activation
-        if ctx.compress_type == 'JPEG':
-            pass
-        
-        elif ctx.compress_type == 'DCT':
-            group_size_1 = input_shape[-2] // 64
-            group_size_2 = input_shape[-1] // 64
-            # convert 
-            x = x.view(-1, group_size_1, 64, group_size_2, 64)
-            x = x.permute(0, 1, 3, 2, 4)
-            x = x.reshape(-1, 64 * 64).contiguous()
-            # dequantize
-            x = s * (x.to(torch.float32) - z)
-            # then convert back to the original shape
-            x = x.reshape(-1, group_size_1, group_size_2, 64, 64)
-            x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
-            x = x.reshape(input_shape)
+        dx, dw, db = None, None, None
 
-        # heuristics for amount of parallel reduction stream for DW/DB
-        N = w.shape[0]
-        GROUP_SIZE_M = 64
-        if N <= 8192: GROUP_SIZE_M = 96
-        if N <= 4096: GROUP_SIZE_M = 128
-        if N <= 1024: GROUP_SIZE_M = 256
-        # allocate output
-        locks = torch.zeros(2 * GROUP_SIZE_M, dtype=torch.int32, device='cuda')
-        _dw = torch.empty((GROUP_SIZE_M, w.shape[0]), dtype=x.dtype, device=w.device)
-        _db = torch.empty((GROUP_SIZE_M, w.shape[0]), dtype=x.dtype, device=w.device)
-        dw = torch.empty((w.shape[0], ), dtype=w.dtype, device=w.device)
-        db = torch.empty((w.shape[0], ), dtype=w.dtype, device=w.device)
-        dx = torch.empty_like(dy)
-        # enqueue kernel using forward pass heuristics
-        # also compute partial sums for DW and DB
-        x_arg = x.reshape(-1, x.shape[-1])
-        M, N = x_arg.shape
-        _layer_norm_bwd_dx_fused[(M, )](  #
-            dx, dy, _dw, _db, x, w, b, m, v, locks,  #
-            x_arg.stride(0), N, ctx.eps,  #
-            BLOCK_SIZE_N=ctx.BLOCK_SIZE,  #
-            GROUP_SIZE_M=GROUP_SIZE_M,  #
-            num_warps=ctx.num_warps)
-        grid = lambda meta: [triton.cdiv(N, meta['BLOCK_SIZE_N'])]
-        # accumulate partial sums in separate kernel
-        _layer_norm_bwd_dwdb[grid](
-            _dw, _db, dw, db, min(GROUP_SIZE_M, M), N,  #
-            BLOCK_SIZE_M=32,  #
-            BLOCK_SIZE_N=128)
+        if ctx.needs_inputs_grad:
+            # dequantize the cached activation
+            if ctx.compress_type == 'JPEG':
+                pass
+            
+            elif ctx.compress_type == 'DCT':
+                x = per_block_dequantization(x, input_shape, quant_state)
+
+            # heuristics for amount of parallel reduction stream for DW/DB
+            N = w.shape[0]
+            GROUP_SIZE_M = 64
+            if N <= 8192: GROUP_SIZE_M = 96
+            if N <= 4096: GROUP_SIZE_M = 128
+            if N <= 1024: GROUP_SIZE_M = 256
+            # allocate output
+            locks = torch.zeros(2 * GROUP_SIZE_M, dtype=torch.int32, device='cuda')
+            _dw = torch.empty((GROUP_SIZE_M, w.shape[0]), dtype=x.dtype, device=w.device)
+            _db = torch.empty((GROUP_SIZE_M, w.shape[0]), dtype=x.dtype, device=w.device)
+            dw = torch.empty((w.shape[0], ), dtype=w.dtype, device=w.device)
+            db = torch.empty((w.shape[0], ), dtype=w.dtype, device=w.device)
+            dx = torch.empty_like(dy)
+            # enqueue kernel using forward pass heuristics
+            # also compute partial sums for DW and DB
+            x_arg = x.reshape(-1, x.shape[-1])
+            M, N = x_arg.shape
+            _layer_norm_bwd_dx_fused[(M, )](  #
+                dx, dy, _dw, _db, x, w, b, m, v, locks,  #
+                x_arg.stride(0), N, ctx.eps,  #
+                BLOCK_SIZE_N=ctx.BLOCK_SIZE,  #
+                GROUP_SIZE_M=GROUP_SIZE_M,  #
+                num_warps=ctx.num_warps)
+            grid = lambda meta: [triton.cdiv(N, meta['BLOCK_SIZE_N'])]
+            # accumulate partial sums in separate kernel
+            _layer_norm_bwd_dwdb[grid](
+                _dw, _db, dw, db, min(GROUP_SIZE_M, M), N,  #
+                BLOCK_SIZE_M=32,  #
+                BLOCK_SIZE_N=128)
+
         return dx, None, dw, db, None, None, None, None
 
 
@@ -357,14 +331,14 @@ class EfficientMemoryLayerNorm(torch.nn.LayerNorm):
 
   def forward(self, x):
     return EfficientMemoryLayerNormFunc.apply(
-      x, 
-      self.normalized_shape, 
-      self.weight, 
-      self.bias, 
-      self.eps,
-      self.compress_type,
-      self.jpeg_processor,
-      self.dct_processor
+        x, 
+        self.normalized_shape, 
+        self.weight, 
+        self.bias, 
+        self.eps,
+        self.compress_type,
+        self.jpeg_processor,
+        self.dct_processor
     )
 
 
