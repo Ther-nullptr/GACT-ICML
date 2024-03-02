@@ -62,7 +62,9 @@ def jpeg_compression(x, input_shape, jpeg_processor):
     jpeg_size_2 = input_shape[-1] // 8
     x = x.view(-1, group_size_1, group_size_2, 64, 64).permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
     x = x.view(-1, jpeg_size_1, 8, jpeg_size_2, 8).permute(0, 1, 3, 2, 4) # [32, 16, 8, 96, 8] -> [32, 16, 96, 8, 8]
-    x = jpeg_processor(x).to(torch.int8).permute(0, 1, 3, 2, 4)
+    x = torch.round(torch.clamp(jpeg_processor(x), -128, 127)).to(torch.int8)
+    x = x.permute(0, 1, 3, 2, 4) # [32, 16, 8, 96, 8] 
+    x = x.reshape(input_shape) # [32, 128, 768]
 
     return x
 

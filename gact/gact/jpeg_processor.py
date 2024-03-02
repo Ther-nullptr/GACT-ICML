@@ -5,10 +5,9 @@ class JPEGProcessor(torch.nn.Module):
   def __init__(self, quality=75):
     super(JPEGProcessor, self).__init__()
     self.quality = quality
-    self.quant_matrix = get_dqf_matrix(quality, flatten=False).to('cuda:0')
-    self.dct_base = get_dct_matrix(8).to('cuda:0')
+    self.quant_matrix = get_dqf_matrix(quality, flatten=False).to('cuda')
+    self.dct_base = get_dct_matrix(8).to('cuda')
 
-  @staticmethod
   def forward(self, x):
     # '''
     # # The matrix is quantized by following algorithm:
@@ -18,7 +17,7 @@ class JPEGProcessor(torch.nn.Module):
     # '''
     # 2D DCT
     x = x.to(torch.float16)
-    C = torch.matmul(torch.matmul(self.dct_base, x), self.dct_base.T)
+    C = torch.matmul(torch.matmul(self.dct_base, x), self.dct_base.T) # (8, 8) x (32, 16, 96, 8, 8) x (8, 8)
     # quantize then dequantize
     quantized_C = torch.round(C / self.quant_matrix) * self.quant_matrix 
     # IDCT

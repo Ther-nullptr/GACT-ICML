@@ -5,8 +5,8 @@ class DCTProcessor(torch.nn.Module):
   def __init__(self, quality=75):
     super(DCTProcessor, self).__init__()
     self.quality = quality
-    self.quant_matrix = get_dqf_matrix(quality, flatten=True).to(torch.float16).to('cuda:0')
-    self.dct_base = get_dct_matrix(64).to(torch.float16).to('cuda:0')
+    self.quant_matrix = get_dqf_matrix(quality, flatten=True).to(torch.float16).to('cuda')
+    self.dct_base = get_dct_matrix(64).to(torch.float16).to('cuda')
 
   def forward(self, x):
     '''

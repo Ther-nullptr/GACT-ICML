@@ -281,12 +281,7 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
         dx, dw, db = None, None, None
 
         if ctx.needs_inputs_grad:
-            # dequantize the cached activation
-            if ctx.compress_type == 'JPEG':
-                pass
-            
-            elif ctx.compress_type == 'DCT':
-                x = per_block_dequantization(x, input_shape, quant_state)
+            x = per_block_dequantization(x, input_shape, quant_state)
 
             # heuristics for amount of parallel reduction stream for DW/DB
             N = w.shape[0]
@@ -326,7 +321,7 @@ class EfficientMemoryLayerNorm(torch.nn.LayerNorm):
     super(EfficientMemoryLayerNorm, self).__init__(normalized_shape, eps, elementwise_affine, bias)
     self.compress_type = compress_type
     self.compress_quality = compress_quality
-    self.jpeg_processor = None # JPEGProcessor(quality=compress_quality)
+    self.jpeg_processor = JPEGProcessor(quality=compress_quality)
     self.dct_processor = DCTProcessor(quality=compress_quality)
 
   def forward(self, x):

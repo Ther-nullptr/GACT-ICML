@@ -269,23 +269,23 @@ def replace_module(module):
             setattr(module, name, new_child)
         elif isinstance(child, GELUActivation):
             setattr(module, name, EfficientMemoryGELU(compress_type='DCT', compress_quality=75))
-        elif isinstance(child, torch.nn.LayerNorm):
-            original_weight_data = child.weight.data
-            original_bias_data = child.bias.data
-            new_child = EfficientMemoryLayerNorm(
-                normalized_shape=child.normalized_shape,
-                eps=child.eps,
-                elementwise_affine=child.elementwise_affine,
-                bias=child.bias is not None,
-                compress_type='DCT',
-                compress_quality=75,
-            )
-            new_child.weight.data = original_weight_data
-            if child.bias is not None:
-                new_child.bias.data = original_bias_data
-            setattr(module, name, new_child)
-        elif isinstance(child, torch.nn.Softmax):
-            setattr(module, name, EfficientMemorySoftmax(-1, compress_type='DCT', compress_quality=75))
+        # elif isinstance(child, torch.nn.LayerNorm):
+        #     original_weight_data = child.weight.data
+        #     original_bias_data = child.bias.data
+        #     new_child = EfficientMemoryLayerNorm(
+        #         normalized_shape=child.normalized_shape,
+        #         eps=child.eps,
+        #         elementwise_affine=child.elementwise_affine,
+        #         bias=child.bias is not None,
+        #         compress_type='DCT',
+        #         compress_quality=75,
+        #     )
+        #     new_child.weight.data = original_weight_data
+        #     if child.bias is not None:
+        #         new_child.bias.data = original_bias_data
+        #     setattr(module, name, new_child)
+        # elif isinstance(child, torch.nn.Softmax):
+        #     setattr(module, name, EfficientMemorySoftmax(-1, compress_type='DCT', compress_quality=75))
         # elif isinstance(child, torch.nn.Dropout):
         #     setattr(module, name, EfficientMemoryDropout(child.p))
         else:
