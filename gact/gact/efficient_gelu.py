@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn.functional as F
 from gact.dct_processor import DCTProcessor
@@ -31,21 +32,17 @@ class EfficientMemoryGELUFunc(torch.autograd.Function):
     quant_state = ctx.quant_state
     input_shape = ctx.input_shape
 
+    gamma = math.sqrt(2 / math.pi)
+    kappa = 0.044715
+
     grad_input = None
 
     if ctx.needs_inputs_grad:
-      # dequantize the cached activation
-      if ctx.compress_type == 'JPEG':
-          pass
-      
-      elif ctx.compress_type == 'DCT':
-          x = per_block_dequantization(x, input_shape, quant_state)
+      x = per_block_dequantization(x, input_shape, quant_state)
 
-      grad_input = None
-      if ctx.needs_inputs_grad:
-        exp_term = torch.exp(-0.5 * x * x)
-        grad_input = F.gelu(x) + 0.5 * x * exp_term / 1.41421
-        grad_input = grad_input * grad_output
+      y = gamma * (x + kappa * x**3)
+      tanh_y = F.tanh(y)
+      grad_input = 0.5 * ( (1 + tanh_y) + x * ( (1 - tanh_y ** 2) * gamma * (1 + 3 * kappa * x ** 2) ) ) * grad_output
 
     return grad_input, None, None, None
   
@@ -55,7 +52,7 @@ class EfficientMemoryGELU(torch.nn.Module):
     super(EfficientMemoryGELU, self).__init__()
     self.compress_type = compress_type
     self.compress_quality = compress_quality
-    self.jpeg_processor = None # JPEGProcessor(quality=compress_quality)
+    self.jpeg_processor = JPEGProcessor(quality=compress_quality)
     self.dct_processor = DCTProcessor(quality=compress_quality)
 
   def forward(self, input):

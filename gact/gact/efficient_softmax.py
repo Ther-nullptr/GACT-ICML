@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from gact.jpeg_processor import JPEGProcessor
 from gact.dct_processor import DCTProcessor
 
 from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression
@@ -45,11 +46,7 @@ class EfficientMemorySoftmaxFunc(torch.autograd.Function):
         grad_input = None
         if ctx.needs_inputs_grad:
             # dequantize the cached activation
-            if ctx.compress_type == 'JPEG':
-                pass
-            
-            elif ctx.compress_type == 'DCT':
-                x = per_block_dequantization(x, input_shape, quant_state)
+            x = per_block_dequantization(x, input_shape, quant_state)
 
             # demerge the 1st and 2nd dimension
             x = x.view(ctx.original_shape)
@@ -64,7 +61,7 @@ class EfficientMemorySoftmax(nn.Module):
         self.dim = dim
         self.compress_type = compress_type
         self.compress_quality = compress_quality
-        self.jpeg_processor = None # JPEGProcessor(quality=compress_quality)
+        self.jpeg_processor = JPEGProcessor(quality=compress_quality)
         self.dct_processor = DCTProcessor(quality=compress_quality)
 
     def forward(self, input):
