@@ -72,10 +72,8 @@ def jpeg_compression(x, input_shape, jpeg_processor):
 def naive_adjustment(x, input_shape):
     group_size_1 = input_shape[-2] // 64
     group_size_2 = input_shape[-1] // 64
-    shape_for_dct1d = input_shape[:-2] + (group_size_1, 64, input_shape[-1])
     x = x.reshape(-1, group_size_1, group_size_2, 64, 64)
     x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
     x = x.reshape(input_shape)
 
     return x
-

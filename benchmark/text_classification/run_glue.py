@@ -265,7 +265,7 @@ compress_config = {
         'quality': 75
     },
     'layer_norm': {
-        'mode': 'NAIVE',
+        'mode': 'DCT',
         'quality': 75
     },
     'softmax': {
@@ -296,8 +296,8 @@ def replace_module(module):
             if child.bias is not None:
                 new_child.bias.data = original_bias_data
             setattr(module, name, new_child)
-        # elif isinstance(child, GELUActivation):
-        #     setattr(module, name, EfficientMemoryGELU(compress_type=compress_config['gelu']['mode'], compress_quality=compress_config['gelu']['quality']))
+        elif isinstance(child, GELUActivation):
+            setattr(module, name, EfficientMemoryGELU(compress_type=compress_config['gelu']['mode'], compress_quality=compress_config['gelu']['quality']))
         elif isinstance(child, torch.nn.LayerNorm):
             original_weight_data = child.weight.data
             original_bias_data = child.bias.data
@@ -313,8 +313,8 @@ def replace_module(module):
             if child.bias is not None:
                 new_child.bias.data = original_bias_data
             setattr(module, name, new_child)
-        # elif isinstance(child, torch.nn.Softmax):
-        #     setattr(module, name, EfficientMemorySoftmax(-1, compress_type=compress_config['softmax']['mode'], compress_quality=compress_config['softmax']['quality']))
+        elif isinstance(child, torch.nn.Softmax):
+            setattr(module, name, EfficientMemorySoftmax(-1, compress_type=compress_config['softmax']['mode'], compress_quality=compress_config['softmax']['quality']))
         # elif isinstance(child, torch.nn.Dropout):
         #     setattr(module, name, EfficientMemoryDropout(child.p))
         else:

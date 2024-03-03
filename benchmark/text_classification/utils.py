@@ -1,6 +1,5 @@
 from enum import Enum
 
-
 class Summary(Enum):
     NONE = 0
     AVERAGE = 1
