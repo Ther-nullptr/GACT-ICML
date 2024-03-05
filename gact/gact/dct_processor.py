@@ -2,11 +2,11 @@ import torch
 from gact.utils import get_dct_matrix, get_dqf_matrix
 
 class DCTProcessor(torch.nn.Module):
-  def __init__(self, quality=75):
+  def __init__(self, quality=75, interpolation=1.):
     super(DCTProcessor, self).__init__()
     self.quality = quality
-    self.quant_matrix = get_dqf_matrix(quality, flatten=True).to(torch.float16).to('cuda')
-    self.dct_base = get_dct_matrix(64).to(torch.float16).to('cuda')
+    self.quant_matrix = get_dqf_matrix(quality, flatten=True, interpolation=interpolation).to(torch.float16).to('cuda')
+    self.dct_base = get_dct_matrix(int(64 * interpolation)).to(torch.float16).to('cuda')
 
   def forward(self, x):
     '''

@@ -228,6 +228,21 @@ def parse_args():
     parser.add_argument("--sparse-bp-freeze-layer", type=str, default="[]", help='sparse bp layer')
     # config about linear probe
     parser.add_argument("--linear-probe", action='store_true', help='enable linear probe')
+    # config about quantizer
+    parser.add_argument("--linear-mode", type=str, default="NAIVE", help='linear mode')
+    parser.add_argument("--linear-quality", type=int, default=75, help='linear quality')
+    parser.add_argument("--gelu-mode", type=str, default="NAIVE", help='gelu mode')
+    parser.add_argument("--gelu-quality", type=int, default=75, help='gelu quality')
+    parser.add_argument("--gelu-quantization-shape", type=int, default=8, help='gelu quantization shape')
+    parser.add_argument("--layer-norm-mode", type=str, default="NAIVE", help='layer norm mode')
+    parser.add_argument("--layer-norm-quality", type=int, default=75, help='layer norm quality')
+    parser.add_argument("--layer-norm-quantization-shape", type=int, default=8, help='layer norm quantization shape')
+    parser.add_argument("--softmax-mode", type=str, default="NAIVE", help='softmax mode')
+    parser.add_argument("--softmax-quality", type=int, default=75, help='softmax quality')
+    parser.add_argument("--softmax-quantization-shape", type=int, default=8, help='softmax quantization shape')
+    parser.add_argument("--dropout-mode", type=str, default="DCT", help='dropout mode')
+    parser.add_argument("--dropout-quality", type=int, default=75, help='dropout quality')
+    # config about compress
 
     args = parser.parse_args()
 
@@ -248,41 +263,44 @@ def parse_args():
     if args.gact:
         assert args.gradient_accumulation_steps == 1, "gact works with accumulation step = 1"
 
-    return args
+    compress_config = {
+        'linear': {
+            'mode': args.linear_mode,
+            'quality': args.linear_quality
+        },
+        'gelu': {
+            'mode': args.gelu_mode,
+            'quality': args.gelu_quality,
+            'quantization_shape': args.gelu_quantization_shape
+        },
+        'layer_norm': {
+            'mode': args.layer_norm_mode,
+            'quality': args.layer_norm_quality,
+            'quantization_shape': args.layer_norm_quantization_shape
+        },
+        'softmax': {
+            'mode': args.softmax_mode,
+            'quality': args.softmax_quality,
+            'quantization_shape': args.softmax_quantization_shape
+        },
+        'dropout': {
+            'mode': 'DCT', #! dropout only has 'NAIVE' and 'NONE' mode
+            'quality': 75
+        }
+    }
+
+    print(f"Compress config: {compress_config}")
+
+    return args, compress_config
 
 # compress module config:
 # 1. name: the name of the module
 # 2. mode: the compress mode, including 'DCT', 'JPEG', 'NAIVE', 'NONE'
 # 3. quality: the quality of the compress, only for 'JPEG' and 'DCT'
 
-compress_config = {
-    'linear': {
-        'mode': 'DCT',
-        'quality': 75
-    },
-    'gelu': {
-        'mode': 'DCT',
-        'quality': 75
-    },
-    'layer_norm': {
-        'mode': 'DCT',
-        'quality': 75
-    },
-    'softmax': {
-        'mode': 'DCT',
-        'quality': 75
-    },
-    'dropout': {
-        'mode': 'DCT', #! dropout only has 'NAIVE' and 'NONE' mode
-        'quality': 75
-    }
-}
-
-print(compress_config)
-
-def replace_module(module):
+def replace_module(module, compress_config):
     for name, child in module.named_children():
-        if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features != 8):
+        if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features > 100):
             original_weight_data = child.weight.data
             original_bias_data = child.bias.data if child.bias is not None else None
             new_child = EfficientMemoryLinear(
@@ -297,7 +315,7 @@ def replace_module(module):
                 new_child.bias.data = original_bias_data
             setattr(module, name, new_child)
         elif isinstance(child, GELUActivation):
-            setattr(module, name, EfficientMemoryGELU(compress_type=compress_config['gelu']['mode'], compress_quality=compress_config['gelu']['quality']))
+            setattr(module, name, EfficientMemoryGELU(compress_type=compress_config['gelu']['mode'], compress_quality=compress_config['gelu']['quality'], quantization_shape=compress_config['gelu']['quantization_shape']))
         elif isinstance(child, torch.nn.LayerNorm):
             original_weight_data = child.weight.data
             original_bias_data = child.bias.data
@@ -308,17 +326,18 @@ def replace_module(module):
                 bias=child.bias is not None,
                 compress_type=compress_config['layer_norm']['mode'],
                 compress_quality=compress_config['layer_norm']['quality'],
+                quantization_shape=compress_config['layer_norm']['quantization_shape']
             )
             new_child.weight.data = original_weight_data
             if child.bias is not None:
                 new_child.bias.data = original_bias_data
             setattr(module, name, new_child)
         elif isinstance(child, torch.nn.Softmax):
-            setattr(module, name, EfficientMemorySoftmax(-1, compress_type=compress_config['softmax']['mode'], compress_quality=compress_config['softmax']['quality']))
-        # elif isinstance(child, torch.nn.Dropout):
-        #     setattr(module, name, EfficientMemoryDropout(child.p))
+            setattr(module, name, EfficientMemorySoftmax(-1, compress_type=compress_config['softmax']['mode'], compress_quality=compress_config['softmax']['quality'], quantization_shape=compress_config['softmax']['quantization_shape']))
+        elif isinstance(child, torch.nn.Dropout):
+            setattr(module, name, EfficientMemoryDropout(child.p))
         else:
-            replace_module(child)
+            replace_module(child, compress_config)
 
 
 def find_all_linear_names(args, model):
@@ -336,7 +355,7 @@ def find_all_linear_names(args, model):
 
 
 def main():
-    args = parse_args()
+    args, compress_config = parse_args()
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     accelerator = Accelerator(device_placement=False)
@@ -497,7 +516,7 @@ def main():
         controller = Controller(model)
 
     if 'JPEG' in args.opt_level or 'DCT' in args.opt_level: #! use another method -- linear replace
-        replace_module(model)
+        replace_module(model, compress_config)
     
     print(model)
 
@@ -925,7 +944,7 @@ def main():
                     )
 
             eval_metric = metric.compute()
-            logger.info(f"epoch {epoch}: {eval_metric}")
+            print(f"epoch {epoch}: {eval_metric}")
 
             for key, value in eval_metric.items():
                 wandb.log({f"val_{key}": value, "val_step": epoch})

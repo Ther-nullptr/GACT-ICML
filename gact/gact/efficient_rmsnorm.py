@@ -52,7 +52,6 @@ def _rms_norm_fwd_fused(
     X,  # pointer to the input
     Y,  # pointer to the output
     W,  # pointer to the weights
-    B,  # pointer to the biases
     Mean,  # pointer to the mean
     Rstd,  # pointer to the 1/std
     stride,  # how much to increase the pointer when moving by 1 row
@@ -69,8 +68,8 @@ def _rms_norm_fwd_fused(
     #? _mean = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
     for off in range(0, N, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
-        a = tl.load(X + cols, mask=cols < N, other=0.).to(tl.float32)
-        _mean += a
+        #? a = tl.load(X + cols, mask=cols < N, other=0.).to(tl.float32)
+        #? _mean += a
     #? mean = tl.sum(_mean, axis=0) / N
     # Compute variance
     _var = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
@@ -89,10 +88,9 @@ def _rms_norm_fwd_fused(
         cols = off + tl.arange(0, BLOCK_SIZE)
         mask = cols < N
         w = tl.load(W + cols, mask=mask)
-        b = tl.load(B + cols, mask=mask)
         x = tl.load(X + cols, mask=mask, other=0.).to(tl.float32)
         x_hat = (x) * rstd
-        y = x_hat * w + b
+        y = x_hat * w
         # Write output
         tl.store(Y + cols, y, mask=mask)
 
@@ -135,10 +133,8 @@ def _rms_norm_fwd_fused(
 def _rms_norm_bwd_dx_fused(DX,  # pointer to the input gradient
                              DY,  # pointer to the output gradient
                              DW,  # pointer to the partial sum of weights gradient
-                             DB,  # pointer to the partial sum of biases gradient
                              X,  # pointer to the input
                              W,  # pointer to the weights
-                             B,  # pointer to the biases
                              Mean,  # pointer to the mean
                              Rstd,  # pointer to the 1/std
                              Lock,  # pointer to the lock
@@ -158,7 +154,6 @@ def _rms_norm_bwd_dx_fused(DX,  # pointer to the input gradient
     Lock += lock_id
     Count = Lock + GROUP_SIZE_M
     DW = DW + lock_id * N + cols
-    DB = DB + lock_id * N + cols
     # Load data to SRAM
     x = tl.load(X + cols, mask=mask, other=0).to(tl.float32)
     dy = tl.load(DY + cols, mask=mask, other=0).to(tl.float32)
@@ -177,7 +172,6 @@ def _rms_norm_bwd_dx_fused(DX,  # pointer to the input gradient
     tl.store(DX + cols, dx, mask=mask)
     # Accumulate partial sums for dw/db
     partial_dw = (dy * xhat).to(w.dtype)
-    partial_db = (dy).to(w.dtype)
     while tl.atomic_cas(Lock, 0, 1) == 1:
         pass
     count = tl.load(Count)
@@ -186,18 +180,14 @@ def _rms_norm_bwd_dx_fused(DX,  # pointer to the input gradient
         tl.atomic_xchg(Count, 1)
     else:
         partial_dw += tl.load(DW, mask=mask)
-        partial_db += tl.load(DB, mask=mask)
     tl.store(DW, partial_dw, mask=mask)
-    tl.store(DB, partial_db, mask=mask)
     # Release the lock
     tl.atomic_xchg(Lock, 0)
 
 
 @triton.jit
 def _rms_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
-                         DB,  # pointer to the partial sum of biases gradient
                          FINAL_DW,  # pointer to the weights gradient
-                         FINAL_DB,  # pointer to the biases gradient
                          M,  # GROUP_SIZE_M
                          N,  # number of columns
                          BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr):
@@ -205,19 +195,15 @@ def _rms_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
     pid = tl.program_id(0)
     cols = pid * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     dw = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    db = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     # Iterate through the rows of DW and DB to sum the partial sums.
     for i in range(0, M, BLOCK_SIZE_M):
         rows = i + tl.arange(0, BLOCK_SIZE_M)
         mask = (rows[:, None] < M) & (cols[None, :] < N)
         offs = rows[:, None] * N + cols[None, :]
         dw += tl.load(DW + offs, mask=mask, other=0.)
-        db += tl.load(DB + offs, mask=mask, other=0.)
     # Write the final sum to the output.
     sum_dw = tl.sum(dw, axis=0)
-    sum_db = tl.sum(db, axis=0)
     tl.store(FINAL_DW + cols, sum_dw, mask=cols < N)
-    tl.store(FINAL_DB + cols, sum_db, mask=cols < N)
 
 
 # %%
@@ -230,7 +216,7 @@ def _rms_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
 
 class EfficientMemoryRMSNormFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, normalized_shape, weight, bias, eps, compress_type, jpeg_processor, dct_processor):
+    def forward(ctx, x, normalized_shape, weight, eps, compress_type, jpeg_processor, dct_processor, quantization_shape = 64):
         # allocate output
         x = x.contiguous()
         y = torch.empty_like(x)
@@ -248,31 +234,31 @@ class EfficientMemoryRMSNormFunc(torch.autograd.Function):
         num_warps = min(max(BLOCK_SIZE // 256, 1), 8)
         # enqueue kernel
         _rms_norm_fwd_fused[(M, )](  #
-            x_arg, y, weight, bias, mean, rstd,  #
+            x_arg, y, weight, mean, rstd,  #
             x_arg.stride(0), N, eps,  #
             BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps
         )
 
-        ctx.needs_inputs_grad = x.requires_grad or weight.requires_grad or bias.requires_grad
+        ctx.needs_inputs_grad = x.requires_grad or weight.requires_grad
         ctx.compress_type = compress_type
+        ctx.quantization_shape = quantization_shape
 
         if compress_type != 'NONE':
             input_shape = x.shape
             ctx.input_shape = input_shape
-            
-            x, quant_state = per_block_quantization(x, input_shape)
+            x, quant_state = per_block_quantization(x, input_shape, quantization_shape)
             ctx.quant_state = quant_state
 
             if compress_type == 'JPEG':
-                x = jpeg_compression(x, input_shape, jpeg_processor)
+                x = jpeg_compression(x, input_shape, jpeg_processor, quantization_shape)
 
             elif compress_type == 'DCT':
-                x = dct_compression(x, input_shape, dct_processor)
+                x = dct_compression(x, input_shape, dct_processor, quantization_shape)
 
             elif compress_type == 'NAIVE':
-                x = naive_adjustment(x, input_shape)
+                x = naive_adjustment(x, input_shape, quantization_shape)
 
-        ctx.save_for_backward(x, weight, bias, mean, rstd)
+        ctx.save_for_backward(x, weight, mean, rstd)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.eps = eps
@@ -281,14 +267,15 @@ class EfficientMemoryRMSNormFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dy):
-        x, w, b, m, v = ctx.saved_tensors
-        dx, dw, db = None, None, None
+        x, w, m, v = ctx.saved_tensors
+        quantization_shape = ctx.quantization_shape
+        dx, dw= None, None
 
         if ctx.needs_inputs_grad:
             if ctx.compress_type != 'NONE':
                 quant_state = ctx.quant_state
                 input_shape = ctx.input_shape
-                x = per_block_dequantization(x, input_shape, quant_state)
+                x = per_block_dequantization(x, input_shape, quant_state, quantization_shape)
 
             # heuristics for amount of parallel reduction stream for DW/DB
             N = w.shape[0]
@@ -299,16 +286,14 @@ class EfficientMemoryRMSNormFunc(torch.autograd.Function):
             # allocate output
             locks = torch.zeros(2 * GROUP_SIZE_M, dtype=torch.int32, device='cuda')
             _dw = torch.empty((GROUP_SIZE_M, w.shape[0]), dtype=x.dtype, device=w.device)
-            _db = torch.empty((GROUP_SIZE_M, w.shape[0]), dtype=x.dtype, device=w.device)
             dw = torch.empty((w.shape[0], ), dtype=w.dtype, device=w.device)
-            db = torch.empty((w.shape[0], ), dtype=w.dtype, device=w.device)
             dx = torch.empty_like(dy)
             # enqueue kernel using forward pass heuristics
             # also compute partial sums for DW and DB
             x_arg = x.reshape(-1, x.shape[-1])
             M, N = x_arg.shape
             _rms_norm_bwd_dx_fused[(M, )](  #
-                dx, dy, _dw, _db, x, w, b, m, v, locks,  #
+                dx, dy, _dw, x, w, m, v, locks,  #
                 x_arg.stride(0), N, ctx.eps,  #
                 BLOCK_SIZE_N=ctx.BLOCK_SIZE,  #
                 GROUP_SIZE_M=GROUP_SIZE_M,  #
@@ -316,31 +301,32 @@ class EfficientMemoryRMSNormFunc(torch.autograd.Function):
             grid = lambda meta: [triton.cdiv(N, meta['BLOCK_SIZE_N'])]
             # accumulate partial sums in separate kernel
             _rms_norm_bwd_dwdb[grid](
-                _dw, _db, dw, db, min(GROUP_SIZE_M, M), N,  #
+                _dw, dw, min(GROUP_SIZE_M, M), N,  #
                 BLOCK_SIZE_M=32,  #
                 BLOCK_SIZE_N=128)
 
-        return dx, None, dw, db, None, None, None, None
+        return dx, None, dw, None, None, None, None, None
 
 
 class EfficientMemoryRMSNorm(torch.nn.LayerNorm):
-  def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, bias=True, compress_type: str = "JPEG", compress_quality: int = 50):
+  def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, bias=True, compress_type: str = "JPEG", compress_quality: int = 50, quantization_shape: int = 64):
     super(EfficientMemoryRMSNorm, self).__init__(normalized_shape, eps, elementwise_affine, bias)
     self.compress_type = compress_type
     self.compress_quality = compress_quality
     self.jpeg_processor = JPEGProcessor(quality=compress_quality)
-    self.dct_processor = DCTProcessor(quality=compress_quality)
+    self.dct_processor = DCTProcessor(quality=compress_quality, interpolation=quantization_shape / 64)
+    self.quantization_shape = quantization_shape
 
   def forward(self, x):
     return EfficientMemoryRMSNormFunc.apply(
         x, 
         self.normalized_shape, 
         self.weight, 
-        self.bias, 
         self.eps,
         self.compress_type,
         self.jpeg_processor,
-        self.dct_processor
+        self.dct_processor,
+        self.quantization_shape
     )
 
 

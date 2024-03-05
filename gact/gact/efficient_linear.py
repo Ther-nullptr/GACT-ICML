@@ -26,7 +26,6 @@ class EfficientMemoryLinearFunc(torch.autograd.Function):
             # shape preparation for DCT
             input_shape = x.shape
             ctx.input_shape = input_shape
-
             # quantize the cached activation
             x, quant_state = per_block_quantization(x, input_shape)
             ctx.quant_state = quant_state

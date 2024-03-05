@@ -230,7 +230,7 @@ def _layer_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
 
 class EfficientMemoryLayerNormFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, normalized_shape, weight, bias, eps, compress_type, jpeg_processor, dct_processor):
+    def forward(ctx, x, normalized_shape, weight, bias, eps, compress_type, jpeg_processor, dct_processor, quantization_shape = 64):
         # allocate output
         x = x.contiguous()
         y = torch.empty_like(x)
@@ -255,22 +255,23 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
 
         ctx.needs_inputs_grad = x.requires_grad or weight.requires_grad or bias.requires_grad
         ctx.compress_type = compress_type
+        ctx.quantization_shape = quantization_shape
 
         if compress_type != 'NONE':
             input_shape = x.shape
             ctx.input_shape = input_shape
             
-            x, quant_state = per_block_quantization(x, input_shape)
+            x, quant_state = per_block_quantization(x, input_shape, quantization_shape)
             ctx.quant_state = quant_state
 
             if compress_type == 'JPEG':
-                x = jpeg_compression(x, input_shape, jpeg_processor)
+                x = jpeg_compression(x, input_shape, jpeg_processor, quantization_shape)
 
             elif compress_type == 'DCT':
-                x = dct_compression(x, input_shape, dct_processor)
+                x = dct_compression(x, input_shape, dct_processor, quantization_shape)
 
             elif compress_type == 'NAIVE':
-                x = naive_adjustment(x, input_shape)
+                x = naive_adjustment(x, input_shape, quantization_shape)
 
         ctx.save_for_backward(x, weight, bias, mean, rstd)
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -282,13 +283,14 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dy):
         x, w, b, m, v = ctx.saved_tensors
+        quantization_shape = ctx.quantization_shape
         dx, dw, db = None, None, None
 
         if ctx.needs_inputs_grad:
             if ctx.compress_type != 'NONE':
                 quant_state = ctx.quant_state
                 input_shape = ctx.input_shape
-                x = per_block_dequantization(x, input_shape, quant_state)
+                x = per_block_dequantization(x, input_shape, quant_state, quantization_shape)
 
             # heuristics for amount of parallel reduction stream for DW/DB
             N = w.shape[0]
@@ -320,16 +322,17 @@ class EfficientMemoryLayerNormFunc(torch.autograd.Function):
                 BLOCK_SIZE_M=32,  #
                 BLOCK_SIZE_N=128)
 
-        return dx, None, dw, db, None, None, None, None
+        return dx, None, dw, db, None, None, None, None, None
 
 
 class EfficientMemoryLayerNorm(torch.nn.LayerNorm):
-  def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, bias=True, compress_type: str = "JPEG", compress_quality: int = 50):
+  def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, bias=True, compress_type: str = "JPEG", compress_quality: int = 50, quantization_shape: int = 64):
     super(EfficientMemoryLayerNorm, self).__init__(normalized_shape, eps, elementwise_affine, bias)
     self.compress_type = compress_type
     self.compress_quality = compress_quality
     self.jpeg_processor = JPEGProcessor(quality=compress_quality)
-    self.dct_processor = DCTProcessor(quality=compress_quality)
+    self.dct_processor = DCTProcessor(quality=compress_quality, interpolation=quantization_shape / 64)
+    self.quantization_shape = quantization_shape
 
   def forward(self, x):
     return EfficientMemoryLayerNormFunc.apply(
@@ -340,7 +343,8 @@ class EfficientMemoryLayerNorm(torch.nn.LayerNorm):
         self.eps,
         self.compress_type,
         self.jpeg_processor,
-        self.dct_processor
+        self.dct_processor,
+        self.quantization_shape
     )
 
 

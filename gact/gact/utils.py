@@ -119,7 +119,7 @@ def get_dct_matrix(size: int):
         D[i][j] = torch.sqrt(2 / n) * torch.cos((2 * j + 1) * i * torch.pi / (2 * n))
   return D
 
-def get_dqf_matrix(quality_factor, flatten=True):
+def get_dqf_matrix(quality_factor, flatten=True, interpolation=1.):
   original_data = torch.tensor(
     [
       [16, 11, 10, 16, 24, 40, 51, 61],
@@ -131,7 +131,7 @@ def get_dqf_matrix(quality_factor, flatten=True):
       [49, 64, 78, 87, 103, 121, 120, 101],
       [72, 92, 95, 98, 112, 100, 103, 99]
     ]
-  )
+  ).to(torch.float32)
 
   for i in range(8):
     for j in range(8):
@@ -140,7 +140,7 @@ def get_dqf_matrix(quality_factor, flatten=True):
       else:
         original_data[i][j] = torch.floor(original_data[i][j] * (2. - quality_factor / 50) + 0.5)
 
-  if not flatten:
+  if flatten == False:
     return original_data
 
   zigzag = []
@@ -151,8 +151,12 @@ def get_dqf_matrix(quality_factor, flatten=True):
           zigzag.append(original_data[i - j][j])
         else:
           zigzag.append(original_data[j][i - j])
+
+  zigzag = torch.tensor(zigzag)
+  # interpolation
+  zigzag = torch.nn.functional.interpolate(zigzag.unsqueeze(0).unsqueeze(0), scale_factor=interpolation, mode='linear').squeeze()
   
-  return torch.tensor(zigzag)
+  return zigzag
 
 class GlobalExpRecorder:
     def __init__(self):
