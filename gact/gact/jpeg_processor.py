@@ -1,5 +1,5 @@
 import torch
-from gact.utils import get_dct_matrix, get_dqf_matrix
+from gact.utils import get_dct_matrix, get_dqf_matrix, get_walsh_matrix
 
 class JPEGProcessor(torch.nn.Module):
   def __init__(self, quality=75):
@@ -24,6 +24,37 @@ class JPEGProcessor(torch.nn.Module):
     P = torch.round(torch.matmul(torch.matmul(self.dct_base.T, quantized_C), self.dct_base))
 
     return P
+  
+  def forward_cpu(self, x):
+    self.dct_base = self.dct_base.to('cpu').to(torch.float32)
+    self.quant_matrix = self.quant_matrix.to('cpu').to(torch.float32)
+    # 2D DCT
+    x = x.to('cpu').to(torch.float32)
+    C = torch.matmul(torch.matmul(self.dct_base, x), self.dct_base.T)
+    # quantize then dequantize
+    quantized_C = torch.round(C / self.quant_matrix) * self.quant_matrix
+    # IDCT  
+    P = torch.round(torch.matmul(torch.matmul(self.dct_base.T, quantized_C), self.dct_base))
+    return P
+  
+  def forward_jpeg(self, x):
+    self.dct_base = self.dct_base.to('cpu').to(torch.float32)
+    self.quant_matrix = self.quant_matrix.to('cpu').to(torch.float32)
+    # 2D DCT
+    x = x.to('cpu').to(torch.float32)
+    C = torch.matmul(torch.matmul(self.dct_base, x), self.dct_base.T) # (8, 8) x (32, 16, 96, 8, 8) x (8, 8)
+    # quantize then dequantize
+    quantized_C = torch.round(C / self.quant_matrix) * self.quant_matrix 
+    return quantized_C
+  
+  def forward_jpeg_no_quant(self, x):
+    self.dct_base = self.dct_base.to('cpu').to(torch.float32)
+    self.quant_matrix = self.quant_matrix.to('cpu').to(torch.float32)
+    x = x.to('cpu').to(torch.float32)
+    # 2D DCT
+    x = x.to(torch.float32)
+    C = torch.matmul(torch.matmul(self.dct_base, x), self.dct_base.T) 
+    return C
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@ from collections import OrderedDict
 import json
 import torch
 import numpy as np
+import scipy
 
 def uniform_sample_ref(input, sample_cnt, add_dataptr=True):
     step = max(torch.numel(input) // sample_cnt, 1)
@@ -119,7 +120,25 @@ def get_dct_matrix(size: int):
         D[i][j] = torch.sqrt(2 / n) * torch.cos((2 * j + 1) * i * torch.pi / (2 * n))
   return D
 
+def get_walsh_matrix(size: int):
+    c = np.sqrt(1 / size)
+    W = scipy.linalg.hadamard(size)
+    return torch.tensor(W * c, dtype=torch.bfloat16)
+
 def get_dqf_matrix(quality_factor, flatten=True, interpolation=1.):
+#   original_data = torch.tensor(
+#     [
+#       [16, 11, 10, 16, 24, 40, 51, 61],
+#       [12, 12, 14, 19, 26, 58, 60, 55],
+#       [14, 13, 16, 24, 40, 57, 69, 56],
+#       [14, 17, 22, 29, 51, 87, 80, 62],
+#       [18, 22, 37, 56, 68, 109, 103, 77],
+#       [24, 35, 55, 64, 81, 104, 113, 92],
+#       [49, 64, 78, 87, 103, 121, 120, 101],
+#       [72, 92, 95, 98, 112, 100, 103, 99]
+#     ]
+#   ).to(torch.float32)
+
   original_data = torch.tensor(
     [
       [16, 11, 10, 16, 24, 40, 51, 61],
