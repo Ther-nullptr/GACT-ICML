@@ -22,6 +22,24 @@ def per_block_quantization(x, input_shape, quantization_shape = 64, eps = 1e-10)
     return x, quant_state
 
 
+def per_block_quantization_4bit(x, input_shape, quantization_shape = 64, eps = 1e-10):
+    # compress then save x
+    group_size_1 = input_shape[-2] // quantization_shape
+    group_size_2 = input_shape[-1] // quantization_shape
+
+    x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
+    x = x.permute(0, 1, 3, 2, 4)
+    x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
+    s = (x.max(dim=-1, keepdim=True).values - x.min(dim=-1, keepdim=True).values) / 15
+    r_min = x.min(dim=-1, keepdim=True).values
+    z = - r_min / (s + eps) - 8
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-8, max=7)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
+
 def per_block_dequantization(x, input_shape, quant_state, quantization_shape = 64):
     s, r_min, z = quant_state
     group_size_1 = input_shape[-2] // quantization_shape
@@ -161,3 +179,17 @@ def naive_adjustment(x, input_shape, quantization_shape = 64):
     x = x.permute(0, 1, 3, 2, 4) #! the order is right now, [32, 2, 64, 12, 64]
     x = x.reshape(input_shape)
     return x
+
+
+def mask_process(x, input_shape):
+    # extract the mask
+    min_val = torch.min(x)
+    mask = (x == min_val)
+    x[x == min_val] = 0.
+
+    diagonal_mask = torch.eye(input_shape[-1]).unsqueeze(0).unsqueeze(0).to(x.device)
+    broadcasted_diagonal_mask = diagonal_mask.expand(input_shape[0], input_shape[1], input_shape[2], input_shape[3])
+    diagonal_x = x * broadcasted_diagonal_mask
+    x = x + x.mT - diagonal_x
+
+    return x, mask

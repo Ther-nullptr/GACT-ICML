@@ -14,7 +14,7 @@ def alg_to_config(algorithm):
 
 
 def network_to_command(network):
-    return "python3 train.py --data ~/imagenet --arch ARCH --batch-size BS CONFIG".replace("ARCH", network)
+    return "python3 train.py --data /data/image/ImageNet/ --arch ARCH --batch-size BS CONFIG".replace("ARCH", network)
 
 
 def run_benchmark(network, alg, batch_size, debug_mem=False, debug_speed=False, input_size=None, get_macs=False):

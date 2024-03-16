@@ -36,7 +36,7 @@ import triton.language as tl
 
 from gact.dct_processor import DCTProcessor
 from gact.jpeg_processor import JPEGProcessor
-from gact.memory_efficient_function import per_block_quantization, per_block_dequantization, dct_compression, jpeg_compression, naive_adjustment
+from gact.memory_efficient_function import per_block_quantization, per_block_quantization_4bit, per_block_dequantization, dct_compression, jpeg_compression, naive_adjustment
 
 try:
     # This is https://github.com/NVIDIA/apex, NOT the apex on PyPi, so it
@@ -216,7 +216,7 @@ def _rms_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
 
 class EfficientMemoryRMSNormFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, normalized_shape, weight, eps, compress_type, jpeg_processor, dct_processor, quantization_shape = 64):
+    def forward(ctx, x, normalized_shape, weight, eps, compress_type, jpeg_processor, dct_processor, quantization_shape = 64, use_4bit = False):
         # allocate output
         x = x.contiguous()
         y = torch.empty_like(x)
@@ -246,7 +246,10 @@ class EfficientMemoryRMSNormFunc(torch.autograd.Function):
         if compress_type != 'NONE':
             input_shape = x.shape
             ctx.input_shape = input_shape
-            x, quant_state = per_block_quantization(x, input_shape, quantization_shape)
+            if use_4bit:
+                x, quant_state = per_block_quantization_4bit(x, input_shape, quantization_shape)
+            else:
+                x, quant_state = per_block_quantization(x, input_shape, quantization_shape)
             ctx.quant_state = quant_state
 
             if compress_type == 'JPEG':
@@ -305,17 +308,18 @@ class EfficientMemoryRMSNormFunc(torch.autograd.Function):
                 BLOCK_SIZE_M=32,  #
                 BLOCK_SIZE_N=128)
 
-        return dx, None, dw, None, None, None, None, None
+        return dx, None, dw, None, None, None, None, None, None
 
 
 class EfficientMemoryRMSNorm(torch.nn.LayerNorm):
-  def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, bias=True, compress_type: str = "JPEG", compress_quality: int = 50, quantization_shape: int = 64):
+  def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, bias=True, compress_type: str = "JPEG", compress_quality: int = 50, quantization_shape: int = 64, use_4bit: bool = False):
     super(EfficientMemoryRMSNorm, self).__init__(normalized_shape, eps, elementwise_affine, bias)
     self.compress_type = compress_type
     self.compress_quality = compress_quality
     self.jpeg_processor = JPEGProcessor(quality=compress_quality)
     self.dct_processor = DCTProcessor(quality=compress_quality, interpolation=quantization_shape / 64)
     self.quantization_shape = quantization_shape
+    self.use_4bit = use_4bit
 
   def forward(self, x):
     return EfficientMemoryRMSNormFunc.apply(
@@ -326,7 +330,8 @@ class EfficientMemoryRMSNorm(torch.nn.LayerNorm):
         self.compress_type,
         self.jpeg_processor,
         self.dct_processor,
-        self.quantization_shape
+        self.quantization_shape,
+        self.use_4bit
     )
 
 
