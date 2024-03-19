@@ -4,6 +4,16 @@ import torch
 pack the memory efficient function into one file
 '''
 
+def naive_quantization(x, eps = 1e-10):
+    s = (x.max() - x.min()) / 255
+    r_min = x.min(dim=-1, keepdim=True).values
+    z = - r_min / (s + eps) - 128
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-128, max=127)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
 def per_block_quantization(x, input_shape, quantization_shape = 64, eps = 1e-10):
     # compress then save x
     group_size_1 = input_shape[-2] // quantization_shape

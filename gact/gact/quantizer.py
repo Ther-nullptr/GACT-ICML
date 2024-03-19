@@ -62,7 +62,7 @@ class Quantizer:
                 return True, True
             return False, False
         # only quantize float16 and float32
-        if input_tensor.dtype not in [torch.float32, torch.float16]:
+        if input_tensor.dtype not in [torch.float32, torch.float16, torch.bfloat16]:
             return False, False
         # only quantize activation that requires gradient
         # for example: BN statistics (running mean/var) should not be quantized

@@ -65,6 +65,8 @@ from gact.efficient_gelu import EfficientMemoryGELU
 from gact.efficient_layernorm import EfficientMemoryLayerNorm
 from gact.efficient_softmax import EfficientMemorySoftmax
 from gact.efficient_dropout import EfficientMemoryDropout
+from gact.fwd_gelu_bwd_relu import ForwardGeLUBackwardReLU
+from gact.fwd_silu_bwd_relu import ForwardSiLUBackwardReLU
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +244,10 @@ def parse_args():
     parser.add_argument("--softmax-quantization-shape", type=int, default=8, help='softmax quantization shape')
     parser.add_argument("--dropout-mode", type=str, default="DCT", help='dropout mode')
     parser.add_argument("--dropout-quality", type=int, default=75, help='dropout quality')
-    # config about compress
+    parser.add_argument("--gemm-mode", type=str, default="NAIVE", help='gemm mode')
+    parser.add_argument("--gemm-quality", type=int, default=75, help='gemm mode')
+    parser.add_argument("--gemm-quantization-shape", type=int, default=8, help='gemm quantization shape')
+    parser.add_argument("--replace-relu", action='store_true', help='whether to replace value')
 
     args = parser.parse_args()
 
@@ -286,6 +291,11 @@ def parse_args():
         'dropout': {
             'mode': 'DCT', #! dropout only has 'NAIVE' and 'NONE' mode
             'quality': 75
+        },
+        'gemm': {
+            'mode': args.gemm_mode,
+            'quality': args.gemm_quality,
+            'quantization_shape': args.gemm_quantization_shape
         }
     }
 
@@ -298,7 +308,7 @@ def parse_args():
 # 2. mode: the compress mode, including 'DCT', 'JPEG', 'NAIVE', 'NONE'
 # 3. quality: the quality of the compress, only for 'JPEG' and 'DCT'
 
-def replace_module(module, compress_config):
+def replace_module(module, compress_config, replace_to_relu):
     for name, child in module.named_children():
         if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features > 100):
             original_weight_data = child.weight.data
@@ -315,7 +325,10 @@ def replace_module(module, compress_config):
                 new_child.bias.data = original_bias_data
             setattr(module, name, new_child)
         elif isinstance(child, GELUActivation):
-            setattr(module, name, EfficientMemoryGELU(compress_type=compress_config['gelu']['mode'], compress_quality=compress_config['gelu']['quality'], quantization_shape=compress_config['gelu']['quantization_shape']))
+            if replace_to_relu:
+                setattr(module, name, ForwardGeLUBackwardReLU())
+            else:
+                setattr(module, name, EfficientMemoryGELU(compress_type=compress_config['gelu']['mode'], compress_quality=compress_config['gelu']['quality'], quantization_shape=compress_config['gelu']['quantization_shape']))
         elif isinstance(child, torch.nn.LayerNorm):
             original_weight_data = child.weight.data
             original_bias_data = child.bias.data
@@ -337,7 +350,7 @@ def replace_module(module, compress_config):
         elif isinstance(child, torch.nn.Dropout):
             setattr(module, name, EfficientMemoryDropout(child.p))
         else:
-            replace_module(child, compress_config)
+            replace_module(child, compress_config, replace_to_relu)
 
 
 def find_all_linear_names(args, model):
@@ -515,8 +528,7 @@ def main():
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
 
-    if 'JPEG' in args.opt_level or 'DCT' in args.opt_level: #! use another method -- linear replace
-        replace_module(model, compress_config)
+    replace_module(model, compress_config, args.replace_relu)
     
     print(model)
 
