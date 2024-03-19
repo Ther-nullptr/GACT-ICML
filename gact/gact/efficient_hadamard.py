@@ -18,8 +18,8 @@ class EfficientMemoryHadamardFunc(torch.autograd.Function):
       input_shape = [x1.shape, x2.shape]
       ctx.input_shape = input_shape
       # quantize the cached activation
-      x1, quant_state1 = per_block_quantization(x1, input_shape[0])
-      x2, quant_state2 = per_block_quantization(x1, input_shape[0])
+      x1, quant_state1 = per_block_quantization(x1.contiguous(), input_shape[0])
+      x2, quant_state2 = per_block_quantization(x2.contiguous(), input_shape[1])
       ctx.quant_state = [quant_state1, quant_state2]
 
       # compress the cached activation
