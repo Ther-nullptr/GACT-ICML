@@ -322,6 +322,9 @@ class EfficientMemoryRMSNorm(torch.nn.LayerNorm):
     self.use_4bit = use_4bit
 
   def forward(self, x):
+    if self.extract_mode:
+        torch.save(x, f"output/{self.name}.pt")
+    
     return EfficientMemoryRMSNormFunc.apply(
         x, 
         self.normalized_shape, 

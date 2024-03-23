@@ -59,6 +59,9 @@ class EfficientMemorySiLU(torch.nn.Module):
     self.quantization_shape = quantization_shape
 
   def forward(self, input):
+    if self.extract_mode:
+      torch.save(input, f"output/{self.name}.pt")
+
     return EfficientMemorySiLUFunc.apply(
       input,
       self.compress_type,

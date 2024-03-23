@@ -69,6 +69,10 @@ class EfficientMemoryHadamard(torch.nn.Module):
     self.quantization_shape = quantization_shape
 
   def forward(self, x1, x2):
+    if self.extract_mode:
+        torch.save(x1, f"output/{self.name}_1.pt")
+        torch.save(x2, f"output/{self.name}_2.pt")
+
     return EfficientMemoryHadamardFunc.apply(
       x1, 
       x2,

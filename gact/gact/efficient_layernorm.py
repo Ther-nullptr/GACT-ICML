@@ -335,6 +335,9 @@ class EfficientMemoryLayerNorm(torch.nn.LayerNorm):
     self.quantization_shape = quantization_shape
 
   def forward(self, x):
+    if self.extract_mode:
+        torch.save(x, f"output/{self.name}.pt")
+
     return EfficientMemoryLayerNormFunc.apply(
         x, 
         self.normalized_shape, 

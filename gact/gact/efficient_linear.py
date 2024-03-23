@@ -75,9 +75,12 @@ class EfficientMemoryLinear(torch.nn.Linear):
         self.dct_processor = DCTProcessor(quality=compress_quality)
         
     def forward(self, input: torch.Tensor):
+        if self.extract_mode:
+            torch.save(input, f"output/{self.name}.pt")
+
         return EfficientMemoryLinearFunc.apply(
             input, 
-            self.weight, 
+            self.weight,
             self.bias, 
             self.bias != None, 
             self.compress_type,

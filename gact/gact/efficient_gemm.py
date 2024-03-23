@@ -80,6 +80,10 @@ class EfficientMemoryGEMM(torch.nn.Module):
     self.attn_first = attn_first
 
   def forward(self, x1, x2):
+    if self.extract_mode:
+        torch.save(x1, f"output/{self.name}_1.pt")
+        torch.save(x2, f"output/{self.name}_2.pt")
+
     return EfficientMemoryGEMMFunc.apply(
       x1, 
       x2,
