@@ -26,6 +26,9 @@ class ForwardGeLUBackwardReLU(torch.nn.Module):
         self.switched = False
 
     def forward(self, x):
+        if self.extract_mode:
+            torch.save(input[0], f"output/{self.name}")
+
         result = ForwardGeLUBackwardReLUFunc.apply(
             x,
             self.beta

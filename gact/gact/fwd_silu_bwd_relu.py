@@ -25,6 +25,9 @@ class ForwardSiLUBackwardReLU(torch.nn.Module):
         self.delta_beta = delta_beta
 
     def forward(self, x):
+        if self.extract_mode:
+            torch.save(input[0], f"output/{self.name}")
+
         result = ForwardSiLUBackwardReLUFunc.apply(
             x,
             self.beta,
