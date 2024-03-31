@@ -3,18 +3,19 @@ import torch
 class ForwardGeLUBackwardReLUFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, beta):
-        mask_1 = (x < 0)
-        ctx.save_for_backward(mask_1)
-        if beta < 5.9: # 10 / 1.702
-            return x / (1 + torch.exp(-beta * x * 1.702))
-        else:
-            return x.clamp(min=0)
+        mask_1 = (x < 0.5)
+        mask_2 = ((x > -2) & (x < -1))
+        mask_3 = ((x > -1) & (x < 0))
+        ctx.save_for_backward(mask_1, mask_2, mask_3)
+        return x / (1 + torch.exp(-beta * x * 1.702))
 
     @staticmethod
     def backward(ctx, grad_output):
-        mask_1, = ctx.saved_tensors
+        mask_1, mask_2, mask_3 = ctx.saved_tensors
         grad_input = grad_output.clone()
         grad_input[mask_1] = 0
+        # grad_input[mask_2] *= -0.1134
+        # grad_input[mask_3] *= 0.1588
         return grad_input, None
     
 
@@ -26,15 +27,9 @@ class ForwardGeLUBackwardReLU(torch.nn.Module):
         self.switched = False
 
     def forward(self, x):
-        if self.extract_mode:
-            torch.save(input[0], f"output/{self.name}")
 
         result = ForwardGeLUBackwardReLUFunc.apply(
             x,
             self.beta
         )
-        self.beta += self.delta_beta
-        if self.beta > 5.9 and not self.switched:
-            print('switch to ReLU')
-            self.switched = True
         return result

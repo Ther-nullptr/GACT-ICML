@@ -61,7 +61,7 @@ class Quantizer:
             if (input_tensor.max() == 1) and (input_tensor.min() == 0):
                 return True, True
             return False, False
-        # only quantize float16 and float32
+        # only quantize bfloat16, float16 and float32
         if input_tensor.dtype not in [torch.float32, torch.float16, torch.bfloat16]:
             return False, False
         # only quantize activation that requires gradient
