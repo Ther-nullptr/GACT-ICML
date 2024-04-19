@@ -14,7 +14,7 @@ def naive_quantization(x, eps = 1e-10):
     quant_state = (s, r_min, z)
     return x, quant_state
 
-def per_block_quantization(x, input_shape, quantization_shape = 64, eps = 1e-10):
+def per_block_quantization(x, input_shape, quantization_shape = 64, eps = 1e-10, bit=8):
     # compress then save x
     group_size_1 = input_shape[-2] // quantization_shape
     group_size_2 = input_shape[-1] // quantization_shape
@@ -22,9 +22,31 @@ def per_block_quantization(x, input_shape, quantization_shape = 64, eps = 1e-10)
     x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
     x = x.permute(0, 1, 3, 2, 4)
     x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
-    s = (x.max(dim=-1, keepdim=True).values - x.min(dim=-1, keepdim=True).values) / 255
+    s = (x.max(dim=-1, keepdim=True).values - x.min(dim=-1, keepdim=True).values) / (2 ** bit - 1) # 2**8-1
     r_min = x.min(dim=-1, keepdim=True).values
-    z = - r_min / (s + eps) - 128
+    z = - r_min / (s + eps) - (2 ** (bit - 1)) # 2**7
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-(2 ** (bit - 1)), max=(2 ** (bit - 1)) - 1)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
+
+def per_block_quantization_fake(x, input_shape, quantization_shape, eps = 1e-10):
+    # compress then save x
+    group_size_1 = input_shape[-2] // quantization_shape
+    group_size_2 = input_shape[-1] // quantization_shape
+    
+    x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
+    x = x.permute(0, 1, 3, 2, 4)
+    x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
+
+    #! a tricky method: if the input has high sparsity, do not use z, thus quantized value will also has lots of zeros
+    zero_ratio = (x == 0).sum() / x.numel()
+    
+    s = (x.max() - x.min()) / 255
+    r_min = x.min()
+    z = - r_min / (s + eps) - 128 #  if zero_ratio > 0.5 else 0
     x = torch.round(torch.clamp(x / (s + eps) + z, min=-128, max=127)).to(torch.int8)
 
     # save the quantization state
@@ -44,6 +66,96 @@ def per_block_quantization_4bit(x, input_shape, quantization_shape = 64, eps = 1
     r_min = x.min(dim=-1, keepdim=True).values
     z = - r_min / (s + eps) - 8
     x = torch.round(torch.clamp(x / (s + eps) + z, min=-8, max=7)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
+
+def per_block_quantization_4bit_fake(x, input_shape, quantization_shape = 64, eps = 1e-10):
+    # compress then save x
+    group_size_1 = input_shape[-2] // quantization_shape
+    group_size_2 = input_shape[-1] // quantization_shape
+
+    x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
+    x = x.permute(0, 1, 3, 2, 4)
+    x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
+    s = (x.max() - x.min()) / 15
+    r_min = x.min()
+    z = - r_min / (s + eps) - 8
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-8, max=7)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
+
+def per_block_quantization_3bit(x, input_shape, quantization_shape = 64, eps = 1e-10):
+    # compress then save x
+    group_size_1 = input_shape[-2] // quantization_shape
+    group_size_2 = input_shape[-1] // quantization_shape
+
+    x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
+    x = x.permute(0, 1, 3, 2, 4)
+    x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
+    s = (x.max(dim=-1, keepdim=True).values - x.min(dim=-1, keepdim=True).values) / 7
+    r_min = x.min(dim=-1, keepdim=True).values
+    z = - r_min / (s + eps) - 4
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-4, max=3)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
+
+def per_block_quantization_3bit_fake(x, input_shape, quantization_shape = 64, eps = 1e-10):
+    # compress then save x
+    group_size_1 = input_shape[-2] // quantization_shape
+    group_size_2 = input_shape[-1] // quantization_shape
+
+    x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
+    x = x.permute(0, 1, 3, 2, 4)
+    x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
+    s = (x.max() - x.min()) / 7
+    r_min = x.min()
+    z = - r_min / (s + eps) - 4
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-4, max=3)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
+
+def per_block_quantization_2bit(x, input_shape, quantization_shape = 64, eps = 1e-10):
+    # compress then save x
+    group_size_1 = input_shape[-2] // quantization_shape
+    group_size_2 = input_shape[-1] // quantization_shape
+
+    x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
+    x = x.permute(0, 1, 3, 2, 4)
+    x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
+    s = (x.max(dim=-1, keepdim=True).values - x.min(dim=-1, keepdim=True).values) / 3
+    r_min = x.min(dim=-1, keepdim=True).values
+    z = - r_min / (s + eps) - 2
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-2, max=1)).to(torch.int8)
+
+    # save the quantization state
+    quant_state = (s, r_min, z)
+    return x, quant_state
+
+
+def per_block_quantization_2bit_fake(x, input_shape, quantization_shape = 64, eps = 1e-10):
+    # compress then save x
+    group_size_1 = input_shape[-2] // quantization_shape
+    group_size_2 = input_shape[-1] // quantization_shape
+
+    x = x.view(-1, group_size_1, quantization_shape, group_size_2, quantization_shape)
+    x = x.permute(0, 1, 3, 2, 4)
+    x = x.reshape(-1, quantization_shape * quantization_shape).contiguous()
+    s = (x.max() - x.min()) / 3
+    r_min = x.min()
+    z = - r_min / (s + eps) - 2
+    x = torch.round(torch.clamp(x / (s + eps) + z, min=-2, max=1)).to(torch.int8)
 
     # save the quantization state
     quant_state = (s, r_min, z)

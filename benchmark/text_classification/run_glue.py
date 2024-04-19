@@ -64,8 +64,10 @@ from gact.efficient_linear import EfficientMemoryLinear
 from gact.efficient_gelu import EfficientMemoryGELU
 from gact.efficient_layernorm import EfficientMemoryLayerNorm
 from gact.efficient_dropout import EfficientMemoryDropout
+from gact.efficient_softmax import EfficientMemorySoftmax
+from gact.efficient_gemm import EfficientMemoryGEMM
 from gact.fwd_gelu_bwd_relu import ForwardGeLUBackwardReLU
-from gact.fwd_silu_bwd_relu import ForwardSiLUBackwardReLU
+from gact.jpeg_processor import JPEGProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -234,19 +236,21 @@ def parse_args():
     parser.add_argument("--linear-quality", type=int, default=75, help='linear quality')
     parser.add_argument("--gelu-mode", type=str, default="NAIVE", help='gelu mode')
     parser.add_argument("--gelu-quality", type=int, default=75, help='gelu quality')
-    parser.add_argument("--gelu-quantization-shape", type=int, default=8, help='gelu quantization shape')
+    parser.add_argument("--gelu-quantization-shape", type=int, default=64, help='gelu quantization shape')
     parser.add_argument("--layer-norm-mode", type=str, default="NAIVE", help='layer norm mode')
     parser.add_argument("--layer-norm-quality", type=int, default=75, help='layer norm quality')
-    parser.add_argument("--layer-norm-quantization-shape", type=int, default=8, help='layer norm quantization shape')
+    parser.add_argument("--layer-norm-quantization-shape", type=int, default=16, help='layer norm quantization shape')
     parser.add_argument("--softmax-mode", type=str, default="NAIVE", help='softmax mode')
     parser.add_argument("--softmax-quality", type=int, default=75, help='softmax quality')
-    parser.add_argument("--softmax-quantization-shape", type=int, default=8, help='softmax quantization shape')
+    parser.add_argument("--softmax-quantization-shape", type=int, default=64, help='softmax quantization shape')
     parser.add_argument("--dropout-mode", type=str, default="DCT", help='dropout mode')
     parser.add_argument("--dropout-quality", type=int, default=75, help='dropout quality')
     parser.add_argument("--gemm-mode", type=str, default="NAIVE", help='gemm mode')
     parser.add_argument("--gemm-quality", type=int, default=75, help='gemm mode')
-    parser.add_argument("--gemm-quantization-shape", type=int, default=8, help='gemm quantization shape')
+    parser.add_argument("--gemm-quantization-shape", type=int, default=64, help='gemm quantization shape')
     parser.add_argument("--replace-relu", action='store_true', help='whether to replace value')
+    parser.add_argument("--transform-weight", action='store_true', help='whether to transform weight')
+    parser.add_argument("--weight-quality", type=int, default=75, help='weight quality')
 
     args = parser.parse_args()
 
@@ -309,47 +313,68 @@ def parse_args():
 
 def replace_module(module, compress_config, replace_to_relu):
     for name, child in module.named_children():
-        # if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features > 100):
-        #     original_weight_data = child.weight.data
-        #     original_bias_data = child.bias.data if child.bias is not None else None
-        #     new_child = EfficientMemoryLinear(
-        #         in_features=child.in_features,
-        #         out_features=child.out_features,
-        #         bias=child.bias is not None,
-        #         compress_type=compress_config['linear']['mode'],
-        #         compress_quality=compress_config['linear']['quality'],
-        #     )
-        #     new_child.weight.data = original_weight_data
-        #     if child.bias is not None:
-        #         new_child.bias.data = original_bias_data
-        #     setattr(module, name, new_child)
+        if isinstance(child, torch.nn.Linear) and (child.weight.requires_grad) and (name != 'class_intermediate' and name != 'out_proj' and child.in_features > 100):
+            original_weight_data = child.weight.data
+            original_bias_data = child.bias.data if child.bias is not None else None
+            new_child = EfficientMemoryLinear(
+                in_features=child.in_features,
+                out_features=child.out_features,
+                bias=child.bias is not None,
+                compress_type=compress_config['linear']['mode'],
+                compress_quality=compress_config['linear']['quality'],
+            )
+            new_child.weight.data = original_weight_data
+            if child.bias is not None:
+                new_child.bias.data = original_bias_data
+            setattr(module, name, new_child)
         if isinstance(child, GELUActivation):
             if replace_to_relu:
                 setattr(module, name, ForwardGeLUBackwardReLU())
             else:
                 setattr(module, name, EfficientMemoryGELU(compress_type=compress_config['gelu']['mode'], compress_quality=compress_config['gelu']['quality'], quantization_shape=compress_config['gelu']['quantization_shape']))
-        # elif isinstance(child, torch.nn.LayerNorm):
-        #     original_weight_data = child.weight.data
-        #     original_bias_data = child.bias.data
-        #     new_child = EfficientMemoryLayerNorm(
-        #         normalized_shape=child.normalized_shape,
-        #         eps=child.eps,
-        #         elementwise_affine=child.elementwise_affine,
-        #         bias=child.bias is not None,
-        #         compress_type=compress_config['layer_norm']['mode'],
-        #         compress_quality=compress_config['layer_norm']['quality'],
-        #         quantization_shape=compress_config['layer_norm']['quantization_shape']
-        #     )
-        #     new_child.weight.data = original_weight_data
-        #     if child.bias is not None:
-        #         new_child.bias.data = original_bias_data
-        #     setattr(module, name, new_child)
-        # elif isinstance(child, torch.nn.Softmax):
-        #     setattr(module, name, EfficientMemorySoftmax(-1, compress_type=compress_config['softmax']['mode'], compress_quality=compress_config['softmax']['quality'], quantization_shape=compress_config['softmax']['quantization_shape']))
-        # elif isinstance(child, torch.nn.Dropout):
-        #     setattr(module, name, EfficientMemoryDropout(child.p))
+        elif isinstance(child, torch.nn.LayerNorm):
+            original_weight_data = child.weight.data
+            original_bias_data = child.bias.data
+            new_child = EfficientMemoryLayerNorm(
+                normalized_shape=child.normalized_shape,
+                eps=child.eps,
+                elementwise_affine=child.elementwise_affine,
+                bias=child.bias is not None,
+                compress_type=compress_config['layer_norm']['mode'],
+                compress_quality=compress_config['layer_norm']['quality'],
+                quantization_shape=compress_config['layer_norm']['quantization_shape']
+            )
+            new_child.weight.data = original_weight_data
+            if child.bias is not None:
+                new_child.bias.data = original_bias_data
+            setattr(module, name, new_child)
+        elif isinstance(child, torch.nn.Softmax):
+            setattr(module, name, EfficientMemorySoftmax(compress_type=compress_config['softmax']['mode'], compress_quality=compress_config['softmax']['quality'], quantization_shape=compress_config['softmax']['quantization_shape']))
+        elif isinstance(child, torch.nn.Dropout):
+            setattr(module, name, EfficientMemoryDropout(child.p))
+        elif 'GEMM' in child.__class__.__name__:
+            attn_first = 'gemm2' in name
+            setattr(module, name, EfficientMemoryGEMM(compress_type=compress_config['gemm']['mode'], compress_quality=compress_config['gemm']['quality'], quantization_shape=compress_config['gemm']['quantization_shape'], attn_first=attn_first))
         else:
             replace_module(child, compress_config, replace_to_relu)
+
+
+def jpeg_compression_weight(model, jpeg_processor_for_weight):
+    for name, module in model.named_modules():
+        if isinstance(module, bnb.modules.Linear4bit):
+            print('jpeg compressing', name)
+            original_shape = module.shape
+            modified_module_weight = module.weight.data.view(original_shape[0], -1)
+            # (hdim1, hdim2) -> (group1, 8, group2, 8) -> (group1, group2, 8, 8)
+            group1 = original_shape[0] // 8
+            group2 = original_shape[1] // 16 #! shrinked by 2
+            modified_module_weight = modified_module_weight.view(group1, 8, group2, 8).permute(0, 2, 1, 3).contiguous()
+            modified_module_weight = jpeg_processor_for_weight.forward(modified_module_weight)
+            # (group1, group2, 8, 8) -> (group1, 8, group2, 8) -> (hdim1, hdim2)
+            modified_module_weight = modified_module_weight.permute(0, 2, 1, 3).contiguous().view(original_shape[0], -1)
+            modified_module_weight = modified_module_weight.view(-1, 1)
+            print(modified_module_weight - module.weight)
+            module.weight.data = modified_module_weight
 
 
 def find_all_linear_names(args, model):
@@ -527,9 +552,21 @@ def main():
         gact.set_optimization_level(args.opt_level)
         controller = Controller(model)
 
+    # replace efficient modules
     replace_module(model, compress_config, args.replace_relu)
-    
+
+    for name, module in model.named_modules():
+        module.name = name
+
+    # convert the weight to use jpeg compression
+    if args.transform_weight:
+        jpeg_processor_for_weight = JPEGProcessor(quality=args.weight_quality)
+        jpeg_compression_weight(model, jpeg_processor_for_weight)
+        
     print(model)
+
+    for name, module in model.named_modules():
+        module.extract_mode = False
 
     # update optimization level, this is only for logging output
     if args.ckpt:
@@ -728,7 +765,7 @@ def main():
 
     # define wandb logger
     wandb_project = f"{args.model_name_or_path.split('/')[-1]}_{args.task_name}"
-    wandb_name = f"lr_{args.learning_rate}_{args.opt_level}_lora_{args.lora}_low-bit-optimizer_{args.optimizer_4bit}_sparse-bp_{args.sparse_bp}_sparse-bp-range_{args.sparse_bp_freeze_range}_sparse-bp-layers_{args.sparse_bp_freeze_layer}_linear-probe_{args.linear_probe}"
+    wandb_name = f"lr_{args.learning_rate}_{args.opt_level}_lora_{args.lora}_low-bit-optimizer_{args.optimizer_4bit}_linear_mode_{args.linear_mode}_gelu_mode_{args.gelu_mode}_layernorm_mode_{args.layer_norm_mode}_softmax_mode_{args.softmax_mode}_gemm_mode_{args.gemm_mode}"
     wandb.init(project=wandb_project, name=wandb_name)
     wandb.define_metric("train_step")
     wandb.define_metric("val_step")
@@ -852,6 +889,7 @@ def main():
                     exit()
                     
                 outputs = model(**batch)
+
                 loss = outputs.loss
                 loss = loss / args.gradient_accumulation_steps
 
